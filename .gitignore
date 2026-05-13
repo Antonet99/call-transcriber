@@ -1,0 +1,24 @@
+completate/
+da_processare/
+logs/
+.obsidian/
+assets/
+
+API.md
+Senza nome.md
+
+*.mp3
+*.mp4
+*.m4a
+*.wav
+*.aac
+*.flac
+*.ogg
+*.webm
+*.wma
+*.mkv
+*.mov
+*.avi
+
+_chunks/
+*.tmp
