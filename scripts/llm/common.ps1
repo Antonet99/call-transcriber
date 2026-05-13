@@ -87,7 +87,18 @@ function Convert-ToCleanMarkdown {
         $line -notmatch '^Leggo la trascrizione e produco il riassunto\.?$'
     })
 
-    return (($lines -join [Environment]::NewLine).Trim())
+    $clean = (($lines -join [Environment]::NewLine).Trim())
+    $frontmatterStart = [regex]::Match($clean, '(?ms)^---\s*$.*?^---\s*$\s*^#\s+riassunto\s*$')
+    if ($frontmatterStart.Success -and $frontmatterStart.Index -gt 0) {
+        $clean = $clean.Substring($frontmatterStart.Index).Trim()
+    } else {
+        $summaryStart = [regex]::Match($clean, '(?m)^#\s+riassunto\s*$')
+        if ($summaryStart.Success -and $summaryStart.Index -gt 0) {
+            $clean = $clean.Substring($summaryStart.Index).Trim()
+        }
+    }
+
+    return $clean
 }
 
 function Assert-ValidSummary {
