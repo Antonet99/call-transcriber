@@ -2,7 +2,7 @@
 
 Pipeline locale Windows per trasformare registrazioni audio/video di call in una knowledge base Markdown pronta per Obsidian.
 
-Il progetto prende file audio o video, estrae l'audio, lo trascrive con Groq Whisper, genera un `riassunto.md` fedele alla conversazione con un provider LLM modulare, archivia l'audio compresso e aggiorna indici navigabili con wikilink.
+Il progetto prende file audio o video, estrae l'audio, lo trascrive con Groq Whisper, genera un riassunto Markdown fedele alla conversazione con un provider LLM modulare, archivia l'audio compresso e aggiorna indici navigabili con wikilink.
 
 ## Funzionalita'
 
@@ -37,7 +37,7 @@ Call/
       <nome task>/
         README.md
         <YYYY-MM-DD HH.mm - titolo>/
-          riassunto.md
+          <titolo call>.md
           audio_compresso.m4a
   logs/
   scripts/
@@ -201,9 +201,18 @@ Sono configurati in `.gemini/settings.json` e usati come controllo interno duran
 Ogni call archiviata contiene:
 
 ```text
-riassunto.md
+<titolo call>.md
 audio_compresso.m4a
 ```
+
+Nelle versioni recenti il file del riassunto viene rinominato usando il titolo della cartella, senza data e ora. Per esempio:
+
+```text
+2026-05-11 11.37 - Marco e Daniela, Autenticazione Claude su Databricks Italgas/
+  Marco e Daniela, Autenticazione Claude su Databricks Italgas.md
+```
+
+Questo evita nodi duplicati chiamati tutti `riassunto` nel graph di Obsidian. Il nome legacy `riassunto.md` puo' ancora comparire come file temporaneo o in archivi vecchi, ma `rebuild_indexes.ps1` lo rinomina automaticamente quando rigenera gli indici.
 
 Esempio di frontmatter:
 
@@ -253,13 +262,14 @@ scripts\rebuild_indexes.ps1
 3. `process_call.ps1` aspetta che dimensione e timestamp siano stabili.
 4. `ffmpeg` estrae o converte l'audio in `audio.m4a`.
 5. Groq Whisper produce `trascrizione.txt`.
-6. Il provider LLM genera `riassunto.md`.
+6. Il provider LLM genera il Markdown del riassunto.
 7. Lo script normalizza titolo e frontmatter.
 8. Il provider LLM classifica la call rispetto alle task esistenti.
 9. La cartella viene spostata sotto `completate/Task/<task>/`.
-10. L'audio viene compresso in `audio_compresso.m4a`.
-11. I file intermedi vengono rimossi.
-12. Gli indici Obsidian vengono rigenerati.
+10. Il file del riassunto viene rinominato con il titolo della call.
+11. L'audio viene compresso in `audio_compresso.m4a`.
+12. I file intermedi vengono rimossi.
+13. Gli indici Obsidian vengono rigenerati.
 
 ## Sviluppo
 

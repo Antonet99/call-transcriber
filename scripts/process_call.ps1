@@ -99,6 +99,142 @@ function Get-ShortTitle {
     return Get-SafeName -Name $clean
 }
 
+function Convert-ToKebabTag {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    $clean = ($Value.ToLowerInvariant() -replace '[^a-z0-9]+', '-' -replace '^-+|-+$', '').Trim()
+    return $clean
+}
+
+function Convert-FrontmatterArray {
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Value = ''
+    )
+
+    $clean = $Value.Trim()
+    if ($clean.StartsWith('[') -and $clean.EndsWith(']')) {
+        $clean = $clean.Substring(1, $clean.Length - 2)
+    }
+
+    return @($clean -split ',' |
+        ForEach-Object { ($_.Trim() -replace '^["'']|["'']$', '') } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+
+function Get-SummaryPeople {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SummaryPath
+    )
+
+    $content = [IO.File]::ReadAllText($SummaryPath, [Text.Encoding]::UTF8)
+    $parts = Split-MarkdownFrontmatter -Text $content
+    if ($parts.Frontmatter.Count -eq 0) {
+        return @()
+    }
+
+    for ($i = 1; $i -lt ($parts.Frontmatter.Count - 1); $i++) {
+        $line = $parts.Frontmatter[$i]
+        if ($line -match '^\s*persone\s*:\s*(.*?)\s*$') {
+            if (-not [string]::IsNullOrWhiteSpace($Matches[1])) {
+                return @(Convert-FrontmatterArray -Value $Matches[1])
+            }
+
+            $people = @()
+            for ($j = $i + 1; $j -lt ($parts.Frontmatter.Count - 1); $j++) {
+                if ($parts.Frontmatter[$j] -match '^\s*-\s*(.+?)\s*$') {
+                    $people += $Matches[1].Trim()
+                    continue
+                }
+                break
+            }
+
+            return @($people)
+        }
+    }
+
+    return @()
+}
+
+function Add-PeopleToTitle {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Title,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$People = @()
+    )
+
+    $cleanPeople = @($People | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    if ($cleanPeople.Count -eq 0) {
+        return $Title
+    }
+
+    $missing = @($cleanPeople | Where-Object {
+        $pattern = '(?i)(^|[\s,;-])' + [regex]::Escape($_) + '($|[\s,;-])'
+        $Title -notmatch $pattern
+    })
+
+    if ($missing.Count -eq 0) {
+        return $Title
+    }
+
+    $prefix = if ($missing.Count -eq 1) {
+        $missing[0]
+    } elseif ($missing.Count -eq 2) {
+        "$($missing[0]) e $($missing[1])"
+    } else {
+        (($missing | Select-Object -First ($missing.Count - 1)) -join ', ') + ' e ' + $missing[-1]
+    }
+
+    return ($prefix + ', ' + $Title)
+}
+
+function Get-CallTitleFromDirectoryName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DirectoryName
+    )
+
+    if ($DirectoryName -match '^\d{4}-\d{2}-\d{2}\s+\d{2}\.\d{2}\s+-\s+(.+)$') {
+        return $Matches[1].Trim()
+    }
+
+    return $DirectoryName.Trim()
+}
+
+function Get-SummaryFileName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Title
+    )
+
+    return (Get-SafeName -Name $Title) + '.md'
+}
+
+function Rename-SummaryFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SummaryPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Title
+    )
+
+    $targetName = Get-SummaryFileName -Title $Title
+    $targetPath = Join-Path (Split-Path -Parent $SummaryPath) $targetName
+    if ([string]::Equals($SummaryPath, $targetPath, [StringComparison]::OrdinalIgnoreCase)) {
+        return $SummaryPath
+    }
+
+    Move-Item -LiteralPath $SummaryPath -Destination $targetPath -Force
+    return $targetPath
+}
+
 function Split-MarkdownFrontmatter {
     param(
         [Parameter(Mandatory = $true)]
@@ -534,6 +670,7 @@ $contextTitle = Get-SummaryTitle -SummaryPath $summaryPath
 if (-not $contextTitle) {
     $contextTitle = Get-ShortTitle -Title $inputItem.BaseName
 }
+$contextTitle = Add-PeopleToTitle -Title $contextTitle -People (Get-SummaryPeople -SummaryPath $summaryPath)
 
 Set-SummaryTitle -SummaryPath $summaryPath -Title $contextTitle
 
@@ -550,13 +687,14 @@ if ($finalCallDir -ne $callDir) {
 }
 
 Set-SummaryFrontmatter -SummaryPath $summaryPath -Timestamp $inputItem.LastWriteTime -TaskName $taskName
+$summaryPath = Rename-SummaryFile -SummaryPath $summaryPath -Title (Get-CallTitleFromDirectoryName -DirectoryName (Split-Path -Leaf $callDir))
 
 Save-CompressedArchiveAudio -SourcePath $audioPath -DestinationPath $archiveAudioPath -FfmpegPath $ffmpeg -FfprobePath $ffprobe -MaxMB $ArchiveMaxMB
 
 Get-ChildItem -LiteralPath $callDir -Force |
     Where-Object {
         $_.Name -ne 'audio_compresso.m4a' -and
-        $_.Name -ne 'riassunto.md'
+        $_.Name -ne (Split-Path -Leaf $summaryPath)
     } |
     Remove-Item -Recurse -Force
 

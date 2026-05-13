@@ -10,7 +10,7 @@ Il progetto automatizza il flusso:
 2. estrazione o conversione dell'audio;
 3. trascrizione con API di Whisper hostato su Groq;
 4. sintesi ragionata della trascrizione con provider LLM modulare, Gemini di default;
-5. generazione di un `riassunto.md` pulito;
+5. generazione di un riassunto Markdown pulito;
 6. completamento del frontmatter YAML per Obsidian;
 7. compressione dell'audio per archivio;
 8. classificazione della call in una cartella task;
@@ -30,7 +30,7 @@ Call/
       <nome task>/
         README.md
         <data ora - titolo call>/
-          riassunto.md
+          <titolo call>.md
           audio_compresso.m4a
   logs/
   scripts/
@@ -72,7 +72,7 @@ Il provider Gemini usa i subagent locali in `.gemini/agents/` come controllo int
 4. Se il file è video, `ffmpeg` estrae l'audio mono a 16 kHz in `audio.m4a`. Se è audio, viene copiato o convertito nello stesso formato operativo.
 5. La trascrizione viene prodotta con Groq. Per file grandi vengono creati chunk temporanei sotto `_chunks/`.
 6. Gemini produce il riassunto seguendo il prompt, salvo override esplicito con `-p claude` o altro provider.
-7. Il Markdown viene pulito e validato. Il file finale deve iniziare con frontmatter YAML e poi:
+7. Il Markdown viene pulito e validato. Il contenuto finale deve iniziare con frontmatter YAML e poi:
 
 ```md
 ---
@@ -92,17 +92,20 @@ tags: [call]
 9. Lo script legge le sottocartelle in `completate/Task/` e chiede al provider LLM selezionato di scegliere il task più coerente rispetto a titolo e riassunto.
 10. La cartella della call viene spostata dentro il task scelto.
 11. Lo script completa il frontmatter con `data`, `ora` e `task: "[[Nome Task]]"` quando la call e' stata assegnata a una task.
-12. L'audio viene compresso in `audio_compresso.m4a`, con target massimo configurabile.
-13. Restano solo `riassunto.md` e `audio_compresso.m4a`; trascrizioni, chunk e audio intermedi vengono rimossi.
-14. Gli indici della knowledge base vengono rigenerati.
+12. Il file Markdown viene rinominato usando il titolo della cartella call senza data e ora.
+13. L'audio viene compresso in `audio_compresso.m4a`, con target massimo configurabile.
+14. Restano solo il Markdown del riassunto e `audio_compresso.m4a`; trascrizioni, chunk e audio intermedi vengono rimossi.
+15. Gli indici della knowledge base vengono rigenerati.
 
 ## Convenzioni importanti
 
-- Il nome del file Markdown finale è sempre `riassunto.md`.
+- Il nome del file Markdown finale e' il titolo della call senza data e ora, ad esempio `Marco e Daniela, Autenticazione Databricks.md`.
 - Il file Markdown finale contiene frontmatter YAML valido per Obsidian.
 - Il titolo principale del Markdown è sempre `# riassunto`.
 - Il sottotitolo è un titolo contestuale breve, massimo 5 o 6 parole.
 - Il nome cartella usa lo stesso titolo contestuale del Markdown.
+- Se il frontmatter contiene `persone`, lo script le aggiunge al titolo della cartella quando non sono gia' presenti.
+- Se una cartella viene rinominata manualmente con prefisso persone, ad esempio `Marco e Daniela, Titolo`, `rebuild_indexes.ps1` rinomina il file Markdown e sincronizza `persone`/`tags` nel frontmatter.
 - `data`, `ora` e `task` vengono scritti dallo script, non dal provider LLM.
 - `persone`, `sistemi` e `tags` vengono estratti dal provider LLM dalla trascrizione; `tags` deve includere `call` e usare kebab-case minuscolo.
 - Gemini e' il provider di default. `process_call.ps1 -p claude` usa Claude; `-p codex` e' presente come placeholder ma non ancora operativo.
