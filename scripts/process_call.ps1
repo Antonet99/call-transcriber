@@ -9,10 +9,22 @@ param(
     [switch]$KeepVideo,
 
     [Parameter(Mandatory = $false)]
-    [decimal]$ArchiveMaxMB = 19
+    [decimal]$ArchiveMaxMB = 19,
+
+    [Parameter(Mandatory = $false)]
+    [Alias('p')]
+    [ValidateSet('gemini', 'claude', 'codex')]
+    [string]$Provider = 'gemini',
+
+    [Parameter(Mandatory = $false)]
+    [string]$SummaryModel = '',
+
+    [Parameter(Mandatory = $false)]
+    [string]$TaskModel = ''
 )
 
 $ErrorActionPreference = 'Stop'
+$Utf8NoBom = New-Object Text.UTF8Encoding($false)
 
 if ([string]::IsNullOrWhiteSpace($RootPath)) {
     $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -20,6 +32,19 @@ if ([string]::IsNullOrWhiteSpace($RootPath)) {
 }
 
 $RootPath = (Resolve-Path -LiteralPath $RootPath).Path
+$llmCommonPath = Join-Path $PSScriptRoot 'llm\common.ps1'
+. $llmCommonPath
+
+$llmProviderPath = Get-LlmProviderPath -ScriptRoot $PSScriptRoot -Provider $Provider
+. $llmProviderPath
+
+if ($Provider -eq 'codex') {
+    throw 'Provider Codex non ancora implementato: definire prima CLI/API e modalita'' headless.'
+}
+
+if (-not (Test-LlmProviderAvailable)) {
+    throw "Provider LLM non disponibile: $Provider"
+}
 
 function Resolve-Tool {
     param(
@@ -74,13 +99,50 @@ function Get-ShortTitle {
     return Get-SafeName -Name $clean
 }
 
+function Split-MarkdownFrontmatter {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Text
+    )
+
+    $lines = @($Text -split '\r?\n')
+    $frontmatter = @()
+    $body = $lines
+    $firstContentIndex = $null
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if (-not [string]::IsNullOrWhiteSpace($lines[$i])) {
+            $firstContentIndex = $i
+            break
+        }
+    }
+
+    if ($null -ne $firstContentIndex -and $lines[$firstContentIndex].Trim() -eq '---') {
+        for ($i = $firstContentIndex + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i].Trim() -eq '---') {
+                $frontmatter = @($lines[$firstContentIndex..$i])
+                $bodyStart = $i + 1
+                $body = if ($bodyStart -lt $lines.Count) { @($lines[$bodyStart..($lines.Count - 1)]) } else { @() }
+                break
+            }
+        }
+    }
+
+    [pscustomobject]@{
+        Frontmatter = $frontmatter
+        Body = $body
+    }
+}
+
 function Get-SummaryTitle {
     param(
         [Parameter(Mandatory = $true)]
         [string]$SummaryPath
     )
 
-    $lines = [IO.File]::ReadAllLines($SummaryPath, [Text.Encoding]::UTF8)
+    $content = [IO.File]::ReadAllText($SummaryPath, [Text.Encoding]::UTF8)
+    $parts = Split-MarkdownFrontmatter -Text $content
+    $lines = @($parts.Body)
     $genericHeadings = @(
         'contesto',
         'decisioni prese',
@@ -113,25 +175,121 @@ function Set-SummaryTitle {
     )
 
     $content = [IO.File]::ReadAllText($SummaryPath, [Text.Encoding]::UTF8).Trim()
-    $lines = @($content -split '\r?\n')
+    $parts = Split-MarkdownFrontmatter -Text $content
+    $body = @($parts.Body)
 
-    if ($lines.Count -gt 0 -and $lines[0] -match '^#\s+') {
-        $body = if ($lines.Count -gt 1) { @($lines[1..($lines.Count - 1)]) } else { @() }
-
-        while ($body.Count -gt 0 -and [string]::IsNullOrWhiteSpace($body[0])) {
-            $body = if ($body.Count -gt 1) { @($body[1..($body.Count - 1)]) } else { @() }
-        }
-
-        if ($body.Count -gt 0 -and $body[0] -match '^##\s+') {
-            $body = if ($body.Count -gt 1) { @($body[1..($body.Count - 1)]) } else { @() }
-        }
-
-        $lines = @('# riassunto', "## $Title", '') + $body
-    } else {
-        $lines = @('# riassunto', "## $Title", '') + $lines
+    while ($body.Count -gt 0 -and [string]::IsNullOrWhiteSpace($body[0])) {
+        $body = if ($body.Count -gt 1) { @($body[1..($body.Count - 1)]) } else { @() }
     }
 
-    [IO.File]::WriteAllText($SummaryPath, (($lines -join [Environment]::NewLine).Trim() + [Environment]::NewLine), (New-Object Text.UTF8Encoding($false)))
+    if ($body.Count -gt 0 -and $body[0] -match '^#\s+') {
+        $body = if ($body.Count -gt 1) { @($body[1..($body.Count - 1)]) } else { @() }
+    }
+
+    while ($body.Count -gt 0 -and [string]::IsNullOrWhiteSpace($body[0])) {
+        $body = if ($body.Count -gt 1) { @($body[1..($body.Count - 1)]) } else { @() }
+    }
+
+    if ($body.Count -gt 0 -and $body[0] -match '^##\s+') {
+        $body = if ($body.Count -gt 1) { @($body[1..($body.Count - 1)]) } else { @() }
+    }
+
+    $lines = @()
+    if ($parts.Frontmatter.Count -gt 0) {
+        $lines += $parts.Frontmatter
+        $lines += ''
+    }
+    $lines += @('# riassunto', "## $Title", '')
+    $lines += $body
+
+    [IO.File]::WriteAllText($SummaryPath, (($lines -join [Environment]::NewLine).Trim() + [Environment]::NewLine), $Utf8NoBom)
+}
+
+function Get-TaskNameFromDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RootPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$TaskDirectory
+    )
+
+    $taskRoot = Join-Path (Join-Path $RootPath 'completate') 'Task'
+    $resolvedTaskRoot = Resolve-Path -LiteralPath $taskRoot -ErrorAction SilentlyContinue
+    $resolvedTaskDirectory = Resolve-Path -LiteralPath $TaskDirectory -ErrorAction SilentlyContinue
+
+    if (-not $resolvedTaskRoot -or -not $resolvedTaskDirectory) {
+        return ''
+    }
+
+    $taskRootPath = $resolvedTaskRoot.Path.TrimEnd('\')
+    $taskDirectoryPath = $resolvedTaskDirectory.Path.TrimEnd('\')
+    $parent = (Split-Path -Parent $taskDirectoryPath).TrimEnd('\')
+
+    if ([string]::Equals($parent, $taskRootPath, [StringComparison]::OrdinalIgnoreCase)) {
+        return Split-Path -Leaf $taskDirectoryPath
+    }
+
+    return ''
+}
+
+function Set-SummaryFrontmatter {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SummaryPath,
+
+        [Parameter(Mandatory = $true)]
+        [datetime]$Timestamp,
+
+        [Parameter(Mandatory = $false)]
+        [string]$TaskName = ''
+    )
+
+    $content = [IO.File]::ReadAllText($SummaryPath, [Text.Encoding]::UTF8).Trim()
+    $parts = Split-MarkdownFrontmatter -Text $content
+    $metadataLines = @()
+    $hasTags = $false
+
+    if ($parts.Frontmatter.Count -gt 0) {
+        $metadataEnd = $parts.Frontmatter.Count - 2
+        for ($i = 1; $i -le $metadataEnd; $i++) {
+            $line = $parts.Frontmatter[$i]
+            if ($line -match '^\s*(data|ora|task)\s*:') {
+                continue
+            }
+
+            if ($line -match '^\s*tags\s*:') {
+                $hasTags = $true
+            }
+
+            $metadataLines += $line
+        }
+    }
+
+    if (-not $hasTags) {
+        $metadataLines += 'tags: [call]'
+    }
+
+    $frontmatter = @(
+        '---',
+        ('data: {0:yyyy-MM-dd}' -f $Timestamp),
+        ('ora: "{0:HH:mm}"' -f $Timestamp)
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($TaskName)) {
+        $frontmatter += ('task: "[[{0}]]"' -f $TaskName)
+    }
+
+    $frontmatter += $metadataLines
+    $frontmatter += '---'
+
+    $body = @($parts.Body)
+    while ($body.Count -gt 0 -and [string]::IsNullOrWhiteSpace($body[0])) {
+        $body = if ($body.Count -gt 1) { @($body[1..($body.Count - 1)]) } else { @() }
+    }
+
+    $lines = $frontmatter + @('') + $body
+    [IO.File]::WriteAllText($SummaryPath, (($lines -join [Environment]::NewLine).Trim() + [Environment]::NewLine), $Utf8NoBom)
 }
 
 function Get-UniqueDirectoryPath {
@@ -165,7 +323,10 @@ function Get-CallTaskDirectory {
         [string]$SummaryPath,
 
         [Parameter(Mandatory = $true)]
-        [string]$Title
+        [string]$Title,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Model = ''
     )
 
     $completedRoot = Join-Path $RootPath 'completate'
@@ -180,38 +341,20 @@ function Get-CallTaskDirectory {
         return $taskRoot
     }
 
-    $claude = Get-Command claude -ErrorAction SilentlyContinue
-    if (-not $claude) {
+    if (-not (Test-LlmProviderAvailable)) {
         return $taskRoot
     }
 
-    $taskList = ($tasks | ForEach-Object { "- $($_.Name)" }) -join [Environment]::NewLine
-    $summary = [IO.File]::ReadAllText($SummaryPath, [Text.Encoding]::UTF8)
-    if ($summary.Length -gt 5000) {
-        $summary = $summary.Substring(0, 5000)
+    if ([string]::IsNullOrWhiteSpace($Model)) {
+        $Model = Get-DefaultTaskModel
     }
 
-    $prompt = @"
-Devi classificare una call già riassunta dentro una delle cartelle task esistenti.
-
-Rispondi solo con il nome esatto di una cartella tra quelle elencate. Non aggiungere spiegazioni, virgolette, markdown o testo extra.
-
-Cartelle task disponibili:
-$taskList
-
-Titolo call:
-$Title
-
-Riassunto call:
-$summary
-"@
-
-    $answer = (($prompt | & $claude.Source -p --model 'claude-sonnet-4-6' --effort low --output-format text) -join [Environment]::NewLine).Trim()
-    $answer = ($answer -replace '^["''`]+|["''`]+$', '').Trim()
-
-    $selected = $tasks | Where-Object { $_.Name -ieq $answer } | Select-Object -First 1
-    if (-not $selected) {
-        $selected = $tasks | Where-Object { $answer -like "*$($_.Name)*" } | Select-Object -First 1
+    try {
+        $prompt = New-TaskClassificationPrompt -Tasks $tasks -SummaryPath $SummaryPath -Title $Title
+        $answer = Invoke-TaskClassification -Prompt $prompt -Model $Model
+        $selected = Select-TaskDirectoryFromAnswer -Tasks $tasks -Answer $answer
+    } catch {
+        return $taskRoot
     }
 
     if ($selected) {
@@ -377,7 +520,15 @@ $transcriptPath = Join-Path $callDir 'trascrizione.txt'
 $summaryPath = Join-Path $callDir 'riassunto.md'
 
 & (Join-Path $PSScriptRoot 'transcribe_with_groq.ps1') -AudioPath $audioPath -OutputPath $transcriptPath | Out-Host
-& (Join-Path $PSScriptRoot 'summarize_with_claude.ps1') -TranscriptPath $transcriptPath -OutputPath $summaryPath | Out-Host
+$summaryScript = Join-Path $PSScriptRoot "summarize_with_$Provider.ps1"
+$summaryArgs = @{
+    TranscriptPath = $transcriptPath
+    OutputPath = $summaryPath
+}
+if (-not [string]::IsNullOrWhiteSpace($SummaryModel)) {
+    $summaryArgs.Model = $SummaryModel
+}
+& $summaryScript @summaryArgs | Out-Host
 
 $contextTitle = Get-SummaryTitle -SummaryPath $summaryPath
 if (-not $contextTitle) {
@@ -387,7 +538,8 @@ if (-not $contextTitle) {
 Set-SummaryTitle -SummaryPath $summaryPath -Title $contextTitle
 
 $finalCallName = '{0:yyyy-MM-dd HH.mm} - {1}' -f $inputItem.LastWriteTime, $contextTitle
-$taskDir = Get-CallTaskDirectory -RootPath $RootPath -SummaryPath $summaryPath -Title $contextTitle
+$taskDir = Get-CallTaskDirectory -RootPath $RootPath -SummaryPath $summaryPath -Title $contextTitle -Model $TaskModel
+$taskName = Get-TaskNameFromDirectory -RootPath $RootPath -TaskDirectory $taskDir
 $finalCallDir = Get-UniqueDirectoryPath -Path (Join-Path $taskDir $finalCallName)
 if ($finalCallDir -ne $callDir) {
     Move-Item -LiteralPath $callDir -Destination $finalCallDir
@@ -396,6 +548,8 @@ if ($finalCallDir -ne $callDir) {
     $archiveAudioPath = Join-Path $callDir 'audio_compresso.m4a'
     $summaryPath = Join-Path $callDir 'riassunto.md'
 }
+
+Set-SummaryFrontmatter -SummaryPath $summaryPath -Timestamp $inputItem.LastWriteTime -TaskName $taskName
 
 Save-CompressedArchiveAudio -SourcePath $audioPath -DestinationPath $archiveAudioPath -FfmpegPath $ffmpeg -FfprobePath $ffprobe -MaxMB $ArchiveMaxMB
 
@@ -412,9 +566,15 @@ if ($isVideo -and -not $KeepVideo) {
     Remove-Item -LiteralPath $InputPath -Force
 }
 
+$rebuildIndexesPath = Join-Path $PSScriptRoot 'rebuild_indexes.ps1'
+if (Test-Path -LiteralPath $rebuildIndexesPath) {
+    & $rebuildIndexesPath -RootPath $RootPath | Out-Host
+}
+
 [pscustomobject]@{
     CallDirectory = $callDir
     TaskDirectory = $taskDir
     Audio = $archiveAudioPath
     Summary = $summaryPath
+    Provider = $Provider
 }

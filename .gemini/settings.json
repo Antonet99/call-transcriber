@@ -1,0 +1,15 @@
+{
+  "experimental": {
+    "enableAgents": true
+  },
+  "agents": {
+    "overrides": {
+      "call_metadata_auditor": {
+        "enabled": true
+      },
+      "call_action_auditor": {
+        "enabled": true
+      }
+    }
+  }
+}
