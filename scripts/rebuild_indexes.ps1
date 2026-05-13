@@ -158,7 +158,7 @@ foreach ($task in $tasks) {
     if ($calls.Count -gt 0) {
         foreach ($call in $calls) {
             $target = Convert-ToWikiPath -Path (Join-Path $call.Directory.Name 'riassunto')
-            $alias = if ($call.Date) { "$($call.Date) — $($call.Title)" } else { $call.Title }
+            $alias = if ($call.Date) { "$($call.Date) - $($call.Title)" } else { $call.Title }
             $lines += "- [[$target|$alias]]"
         }
     }
@@ -172,7 +172,7 @@ if ($tasks.Count -gt 0) {
     foreach ($task in $tasks) {
         $count = @($allCalls | Where-Object { $_.Task -eq $task.Name }).Count
         $target = Convert-ToWikiPath -Path (Join-Path (Join-Path 'Task' $task.Name) 'README')
-        $globalLines += "- [[$target|$($task.Name)]] — $count call"
+        $globalLines += "- [[$target|$($task.Name)]] - $count call"
     }
 } else {
     $globalLines += '- Nessuna task presente.'
@@ -186,7 +186,7 @@ if ($latestCalls.Count -gt 0) {
     foreach ($call in $latestCalls) {
         $target = Convert-ToWikiPath -Path (Join-Path (Join-Path (Join-Path 'Task' $call.Task) $call.Directory.Name) 'riassunto')
         $dateTime = if ($call.Date) { "$($call.Date) $($call.Time)" } else { $call.Directory.Name }
-        $globalLines += "- $dateTime — [[$target|$($call.Title)]] (task: $($call.Task))"
+        $globalLines += "- $dateTime - [[$target|$($call.Title)]] (task: $($call.Task))"
     }
 } else {
     $globalLines += '- Nessuna call archiviata.'
