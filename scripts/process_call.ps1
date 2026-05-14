@@ -24,7 +24,10 @@ param(
 
     [Parameter(Mandatory = $false)]
     [ValidateRange(1, 5)]
-    [int]$GeminiCapacityAttempts = 2
+    [int]$GeminiCapacityAttempts = 2,
+
+    [Parameter(Mandatory = $false)]
+    [string]$GeminiFallbackModel = 'gemini-3-pro-preview'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -684,7 +687,10 @@ function Invoke-SummaryWithFallback {
         [string]$Model = '',
 
         [Parameter(Mandatory = $false)]
-        [int]$GeminiAttempts = 2
+        [int]$GeminiAttempts = 2,
+
+        [Parameter(Mandatory = $false)]
+        [string]$GeminiFallbackModel = 'gemini-3-pro-preview'
     )
 
     if ($Name -ne 'gemini') {
@@ -705,6 +711,16 @@ function Invoke-SummaryWithFallback {
 
             $lastCapacityError = $_
             Write-Warning ("Gemini non ha capacita' disponibile per il modello richiesto. Tentativo {0}/{1} fallito." -f $attempt, $GeminiAttempts)
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($GeminiFallbackModel)) {
+        try {
+            Write-Warning ("Fallback Gemini: provo una volta {0}." -f $GeminiFallbackModel)
+            Invoke-SummaryForProvider -Name 'gemini' -TranscriptPath $TranscriptPath -OutputPath $OutputPath -Model $GeminiFallbackModel
+            return 'gemini'
+        } catch {
+            Write-Warning ("Fallback Gemini {0} fallito: passo a Claude." -f $GeminiFallbackModel)
         }
     }
 
@@ -779,7 +795,8 @@ $summaryProvider = Invoke-SummaryWithFallback `
     -OutputPath $summaryPath `
     -Name $Provider `
     -Model $SummaryModel `
-    -GeminiAttempts $GeminiCapacityAttempts
+    -GeminiAttempts $GeminiCapacityAttempts `
+    -GeminiFallbackModel $GeminiFallbackModel
 
 $contextTitle = Get-SummaryTitle -SummaryPath $summaryPath
 if (-not $contextTitle) {

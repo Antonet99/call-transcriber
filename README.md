@@ -154,7 +154,13 @@ Gemini e' il provider predefinito. Avviando la pipeline senza flag, `process_cal
 - `gemini-3.1-pro-preview` per il riassunto;
 - `gemini-3-flash-preview` per la classificazione task.
 
-Se Gemini restituisce un errore di capacita' sul modello, per esempio `MODEL_CAPACITY_EXHAUSTED` o `RESOURCE_EXHAUSTED`, la pipeline fa 2 tentativi e poi passa automaticamente a Claude:
+Se Gemini restituisce un errore di capacita' sul modello, per esempio `MODEL_CAPACITY_EXHAUSTED` o `RESOURCE_EXHAUSTED`, la pipeline usa questa sequenza:
+
+- 2 tentativi con `gemini-3.1-pro-preview`;
+- 1 tentativo con `gemini-3-pro-preview`;
+- fallback a Claude se anche Gemini 3 Pro non conclude.
+
+Nel fallback Claude usa:
 
 - `claude-sonnet-4-6` per il riassunto, con effort `medium`;
 - subagent Claude `claude-haiku-4-5`, con effort `high`;
@@ -191,6 +197,14 @@ Puoi anche cambiare il numero di tentativi Gemini prima del fallback:
 scripts\process_call.ps1 `
   -InputPath .\da_processare\call.m4a `
   -GeminiCapacityAttempts 3
+```
+
+Il modello Gemini intermedio e' configurabile, ma di default resta `gemini-3-pro-preview`:
+
+```powershell
+scripts\process_call.ps1 `
+  -InputPath .\da_processare\call.m4a `
+  -GeminiFallbackModel gemini-3-pro-preview
 ```
 
 Gli entrypoint standalone sono:
