@@ -4,8 +4,8 @@ logs/
 .obsidian/
 assets/
 
-API.md
-Senza nome.md
+.gemini/
+.claude/
 
 *.mp3
 *.mp4
@@ -22,3 +22,5 @@ Senza nome.md
 
 _chunks/
 *.tmp
+
+LLM_CONTEXT.md

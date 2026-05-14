@@ -9,11 +9,7 @@ param(
     [string]$PromptPath = '',
 
     [Parameter(Mandatory = $false)]
-    [string]$Model = '',
-
-    [Parameter(Mandatory = $false)]
-    [ValidateSet('low', 'medium', 'high', 'xhigh', 'max')]
-    [string]$Effort = 'medium'
+    [string]$Model = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,13 +18,11 @@ $ErrorActionPreference = 'Stop'
 $OutputEncoding = [Text.Encoding]::UTF8
 
 . (Join-Path $PSScriptRoot 'llm\common.ps1')
-. (Join-Path $PSScriptRoot 'llm\providers\claude.ps1')
-
-$script:ClaudeSummaryEffort = $Effort
+. (Join-Path $PSScriptRoot 'llm\providers\codex.ps1')
 
 Invoke-SummaryEntrypoint `
     -TranscriptPath $TranscriptPath `
     -OutputPath $OutputPath `
     -PromptPath $PromptPath `
     -Model $Model `
-    -Provider 'claude'
+    -Provider 'codex'
