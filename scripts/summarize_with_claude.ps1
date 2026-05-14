@@ -13,7 +13,7 @@ param(
 
     [Parameter(Mandatory = $false)]
     [ValidateSet('low', 'medium', 'high', 'xhigh', 'max')]
-    [string]$Effort = 'high'
+    [string]$Effort = 'medium'
 )
 
 $ErrorActionPreference = 'Stop'

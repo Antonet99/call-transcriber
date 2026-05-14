@@ -1,35 +1,35 @@
-function Get-DefaultSummaryModel {
+function script:Get-DefaultSummaryModel {
     return 'claude-sonnet-4-6'
 }
 
-function Get-DefaultTaskModel {
+function script:Get-DefaultTaskModel {
     return 'claude-sonnet-4-6'
 }
 
-function Test-LlmProviderAvailable {
+function script:Test-LlmProviderAvailable {
     return [bool](Get-Command claude -ErrorAction SilentlyContinue)
 }
 
-function New-ClaudeSummaryAgentsJson {
+function script:New-ClaudeSummaryAgentsJson {
     $agents = [ordered]@{
         'call-metadata-auditor' = [ordered]@{
             description = 'Controlla metadati, persone, sistemi e tag del riassunto call prima della risposta finale.'
             prompt = 'Sei un revisore di metadati per riassunti di call in Obsidian. Verifica che frontmatter YAML, persone, sistemi e tag derivino dalla trascrizione, che il tag call sia presente e che i nomi non vengano inventati. Restituisci al main agent solo correzioni puntuali.'
             model = 'claude-haiku-4-5'
-            effort = 'medium'
+            effort = 'high'
         }
         'call-action-auditor' = [ordered]@{
             description = 'Controlla decisioni, action item, dipendenze, numeri e citazioni rilevanti del riassunto call.'
             prompt = 'Sei un revisore di contenuto per riassunti di call. Controlla che decisioni, action item, owner, scadenze, dipendenze, numeri, date e citazioni brevi siano fedeli alla trascrizione. Segnala omissioni concrete al main agent senza riscrivere tutto il riassunto.'
             model = 'claude-haiku-4-5'
-            effort = 'medium'
+            effort = 'high'
         }
     }
 
     return ($agents | ConvertTo-Json -Depth 6 -Compress)
 }
 
-function Add-ClaudeSummaryAgentInstructions {
+function script:Add-ClaudeSummaryAgentInstructions {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Prompt
@@ -48,7 +48,7 @@ Istruzioni Claude Code:
 "@
 }
 
-function Invoke-ClaudeText {
+function script:Invoke-ClaudeText {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Prompt,
@@ -82,7 +82,7 @@ function Invoke-ClaudeText {
     return (($lines -join [Environment]::NewLine).Trim())
 }
 
-function Invoke-SummaryGeneration {
+function script:Invoke-SummaryGeneration {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Prompt,
@@ -91,14 +91,14 @@ function Invoke-SummaryGeneration {
         [string]$Model
     )
 
-    $effort = if ($script:ClaudeSummaryEffort) { $script:ClaudeSummaryEffort } else { 'high' }
+    $effort = if ($script:ClaudeSummaryEffort) { $script:ClaudeSummaryEffort } else { 'medium' }
     $promptWithAgentInstructions = Add-ClaudeSummaryAgentInstructions -Prompt $Prompt
     $agentsJson = New-ClaudeSummaryAgentsJson
 
     return Invoke-ClaudeText -Prompt $promptWithAgentInstructions -Model $Model -Effort $effort -AgentsJson $agentsJson
 }
 
-function Invoke-TaskClassification {
+function script:Invoke-TaskClassification {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Prompt,

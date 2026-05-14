@@ -154,6 +154,12 @@ Gemini e' il provider predefinito. Avviando la pipeline senza flag, `process_cal
 - `gemini-3.1-pro-preview` per il riassunto;
 - `gemini-3-flash-preview` per la classificazione task.
 
+Se Gemini restituisce un errore di capacita' sul modello, per esempio `MODEL_CAPACITY_EXHAUSTED` o `RESOURCE_EXHAUSTED`, la pipeline fa 2 tentativi e poi passa automaticamente a Claude:
+
+- `claude-sonnet-4-6` per il riassunto, con effort `medium`;
+- subagent Claude `claude-haiku-4-5`, con effort `high`;
+- classificazione task con il provider Claude gia' attivo dopo il fallback.
+
 ```powershell
 scripts\process_call.ps1 -InputPath .\da_processare\call.m4a
 ```
@@ -179,6 +185,14 @@ scripts\process_call.ps1 `
   -TaskModel gemini-3-flash-preview
 ```
 
+Puoi anche cambiare il numero di tentativi Gemini prima del fallback:
+
+```powershell
+scripts\process_call.ps1 `
+  -InputPath .\da_processare\call.m4a `
+  -GeminiCapacityAttempts 3
+```
+
 Gli entrypoint standalone sono:
 
 ```powershell
@@ -187,14 +201,14 @@ scripts\summarize_with_claude.ps1 -TranscriptPath .\trascrizione.txt
 scripts\summarize_with_codex.ps1 -TranscriptPath .\trascrizione.txt
 ```
 
-### Subagent Gemini
+### Subagent
 
-Il provider Gemini abilita subagent locali in `.gemini/agents/`:
+Il provider Gemini puo' usare subagent locali in `.gemini/agents/` se presenti nella macchina.
 
-- `call_metadata_auditor`: controllo di persone, sistemi, tag e frontmatter.
-- `call_action_auditor`: controllo di decisioni, action item, dipendenze, domande aperte e citazioni.
+Il provider Claude definisce invece i subagent al volo via CLI, senza file tracciati nel repository:
 
-Sono configurati in `.gemini/settings.json` e usati come controllo interno durante la generazione del riassunto.
+- `call-metadata-auditor`: controllo di persone, sistemi, tag e frontmatter.
+- `call-action-auditor`: controllo di decisioni, action item, dipendenze, domande aperte e citazioni.
 
 ## Output
 

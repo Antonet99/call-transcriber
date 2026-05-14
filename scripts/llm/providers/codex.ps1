@@ -1,16 +1,16 @@
-function Get-DefaultSummaryModel {
+function script:Get-DefaultSummaryModel {
     return ''
 }
 
-function Get-DefaultTaskModel {
+function script:Get-DefaultTaskModel {
     return ''
 }
 
-function Test-LlmProviderAvailable {
+function script:Test-LlmProviderAvailable {
     return $true
 }
 
-function Invoke-SummaryGeneration {
+function script:Invoke-SummaryGeneration {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Prompt,
@@ -22,7 +22,7 @@ function Invoke-SummaryGeneration {
     throw 'Provider Codex non ancora implementato: definire prima CLI/API e modalita'' headless.'
 }
 
-function Invoke-TaskClassification {
+function script:Invoke-TaskClassification {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Prompt,

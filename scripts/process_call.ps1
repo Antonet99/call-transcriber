@@ -20,7 +20,11 @@ param(
     [string]$SummaryModel = '',
 
     [Parameter(Mandatory = $false)]
-    [string]$TaskModel = ''
+    [string]$TaskModel = '',
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(1, 5)]
+    [int]$GeminiCapacityAttempts = 2
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,16 +39,28 @@ $RootPath = (Resolve-Path -LiteralPath $RootPath).Path
 $llmCommonPath = Join-Path $PSScriptRoot 'llm\common.ps1'
 . $llmCommonPath
 
-$llmProviderPath = Get-LlmProviderPath -ScriptRoot $PSScriptRoot -Provider $Provider
-. $llmProviderPath
+function Set-ActiveLlmProvider {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('gemini', 'claude', 'codex')]
+        [string]$Name
+    )
 
-if ($Provider -eq 'codex') {
-    throw 'Provider Codex non ancora implementato: definire prima CLI/API e modalita'' headless.'
+    $llmProviderPath = Get-LlmProviderPath -ScriptRoot $PSScriptRoot -Provider $Name
+    . $llmProviderPath
+
+    if ($Name -eq 'codex') {
+        throw 'Provider Codex non ancora implementato: definire prima CLI/API e modalita'' headless.'
+    }
+
+    if (-not (Test-LlmProviderAvailable)) {
+        throw "Provider LLM non disponibile: $Name"
+    }
+
+    $script:ActiveProvider = $Name
 }
 
-if (-not (Test-LlmProviderAvailable)) {
-    throw "Provider LLM non disponibile: $Provider"
-}
+Set-ActiveLlmProvider -Name $Provider
 
 function Resolve-Tool {
     param(
@@ -606,6 +622,108 @@ function Save-CompressedArchiveAudio {
     throw "Impossibile creare audio compresso sotto $MaxMB MB."
 }
 
+function Test-GeminiCapacityError {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    return ($Message -match '(?i)MODEL_CAPACITY_EXHAUSTED|RESOURCE_EXHAUSTED|No capacity available for model|RetryableQuotaError')
+}
+
+function Invoke-SummaryForProvider {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('gemini', 'claude', 'codex')]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [string]$TranscriptPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$OutputPath,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Model = '',
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('', 'low', 'medium', 'high', 'xhigh', 'max')]
+        [string]$Effort = ''
+    )
+
+    $summaryScript = Join-Path $PSScriptRoot "summarize_with_$Name.ps1"
+    $summaryArgs = @{
+        TranscriptPath = $TranscriptPath
+        OutputPath = $OutputPath
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Model)) {
+        $summaryArgs.Model = $Model
+    }
+
+    if ($Name -eq 'claude' -and -not [string]::IsNullOrWhiteSpace($Effort)) {
+        $summaryArgs.Effort = $Effort
+    }
+
+    & $summaryScript @summaryArgs | Out-Host
+}
+
+function Invoke-SummaryWithFallback {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TranscriptPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$OutputPath,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('gemini', 'claude', 'codex')]
+        [string]$Name,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Model = '',
+
+        [Parameter(Mandatory = $false)]
+        [int]$GeminiAttempts = 2
+    )
+
+    if ($Name -ne 'gemini') {
+        Invoke-SummaryForProvider -Name $Name -TranscriptPath $TranscriptPath -OutputPath $OutputPath -Model $Model
+        return $Name
+    }
+
+    $lastCapacityError = $null
+    for ($attempt = 1; $attempt -le $GeminiAttempts; $attempt++) {
+        try {
+            Invoke-SummaryForProvider -Name 'gemini' -TranscriptPath $TranscriptPath -OutputPath $OutputPath -Model $Model
+            return 'gemini'
+        } catch {
+            $message = $_.Exception.Message
+            if (-not (Test-GeminiCapacityError -Message $message)) {
+                throw
+            }
+
+            $lastCapacityError = $_
+            Write-Warning ("Gemini non ha capacita' disponibile per il modello richiesto. Tentativo {0}/{1} fallito." -f $attempt, $GeminiAttempts)
+        }
+    }
+
+    Write-Warning 'Fallback su Claude: uso claude-sonnet-4-6 con effort medium.'
+    Set-ActiveLlmProvider -Name 'claude'
+    Invoke-SummaryForProvider `
+        -Name 'claude' `
+        -TranscriptPath $TranscriptPath `
+        -OutputPath $OutputPath `
+        -Model 'claude-sonnet-4-6' `
+        -Effort 'medium'
+
+    if (-not (Test-Path -LiteralPath $OutputPath)) {
+        throw $lastCapacityError
+    }
+
+    return 'claude'
+}
+
 $resolved = Resolve-Path -LiteralPath $InputPath -ErrorAction SilentlyContinue
 if (-not $resolved) {
     throw "File non trovato: $InputPath"
@@ -656,15 +774,12 @@ $transcriptPath = Join-Path $callDir 'trascrizione.txt'
 $summaryPath = Join-Path $callDir 'riassunto.md'
 
 & (Join-Path $PSScriptRoot 'transcribe_with_groq.ps1') -AudioPath $audioPath -OutputPath $transcriptPath | Out-Host
-$summaryScript = Join-Path $PSScriptRoot "summarize_with_$Provider.ps1"
-$summaryArgs = @{
-    TranscriptPath = $transcriptPath
-    OutputPath = $summaryPath
-}
-if (-not [string]::IsNullOrWhiteSpace($SummaryModel)) {
-    $summaryArgs.Model = $SummaryModel
-}
-& $summaryScript @summaryArgs | Out-Host
+$summaryProvider = Invoke-SummaryWithFallback `
+    -TranscriptPath $transcriptPath `
+    -OutputPath $summaryPath `
+    -Name $Provider `
+    -Model $SummaryModel `
+    -GeminiAttempts $GeminiCapacityAttempts
 
 $contextTitle = Get-SummaryTitle -SummaryPath $summaryPath
 if (-not $contextTitle) {
@@ -675,7 +790,8 @@ $contextTitle = Add-PeopleToTitle -Title $contextTitle -People (Get-SummaryPeopl
 Set-SummaryTitle -SummaryPath $summaryPath -Title $contextTitle
 
 $finalCallName = '{0:yyyy-MM-dd HH.mm} - {1}' -f $inputItem.LastWriteTime, $contextTitle
-$taskDir = Get-CallTaskDirectory -RootPath $RootPath -SummaryPath $summaryPath -Title $contextTitle -Model $TaskModel
+$activeTaskModel = if ($summaryProvider -eq $Provider) { $TaskModel } else { '' }
+$taskDir = Get-CallTaskDirectory -RootPath $RootPath -SummaryPath $summaryPath -Title $contextTitle -Model $activeTaskModel
 $taskName = Get-TaskNameFromDirectory -RootPath $RootPath -TaskDirectory $taskDir
 $finalCallDir = Get-UniqueDirectoryPath -Path (Join-Path $taskDir $finalCallName)
 if ($finalCallDir -ne $callDir) {
@@ -714,5 +830,5 @@ if (Test-Path -LiteralPath $rebuildIndexesPath) {
     TaskDirectory = $taskDir
     Audio = $archiveAudioPath
     Summary = $summaryPath
-    Provider = $Provider
+    Provider = $script:ActiveProvider
 }

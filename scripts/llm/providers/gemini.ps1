@@ -1,16 +1,16 @@
-function Get-DefaultSummaryModel {
+function script:Get-DefaultSummaryModel {
     return 'gemini-3.1-pro-preview'
 }
 
-function Get-DefaultTaskModel {
+function script:Get-DefaultTaskModel {
     return 'gemini-3-flash-preview'
 }
 
-function Test-LlmProviderAvailable {
+function script:Test-LlmProviderAvailable {
     return [bool](Get-Command gemini -ErrorAction SilentlyContinue)
 }
 
-function Invoke-GeminiText {
+function script:Invoke-GeminiText {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Prompt,
@@ -30,19 +30,24 @@ function Invoke-GeminiText {
     $env:COLORTERM = 'truecolor'
 
     try {
-        $lines = @($Prompt | & $gemini.Source -p ' ' --model $Model --output-format text --skip-trust)
+        $lines = @($Prompt | & $gemini.Source -p ' ' --model $Model --output-format text --skip-trust 2>&1)
         if ($LASTEXITCODE -ne 0) {
-            throw "Gemini CLI ha restituito codice di uscita $LASTEXITCODE."
+            $detail = (($lines | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine).Trim()
+            if ([string]::IsNullOrWhiteSpace($detail)) {
+                throw "Gemini CLI ha restituito codice di uscita $LASTEXITCODE."
+            }
+
+            throw "Gemini CLI ha restituito codice di uscita $LASTEXITCODE. Dettaglio: $detail"
         }
     } finally {
         $env:TERM = $oldTerm
         $env:COLORTERM = $oldColorTerm
     }
 
-    return (($lines -join [Environment]::NewLine).Trim())
+    return (($lines | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine).Trim()
 }
 
-function Add-GeminiSummaryInstructions {
+function script:Add-GeminiSummaryInstructions {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Prompt
@@ -62,7 +67,7 @@ Istruzioni specifiche Gemini CLI:
 '@
 }
 
-function Invoke-SummaryGeneration {
+function script:Invoke-SummaryGeneration {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Prompt,
@@ -75,7 +80,7 @@ function Invoke-SummaryGeneration {
     return Invoke-GeminiText -Prompt $promptWithGeminiInstructions -Model $Model
 }
 
-function Invoke-TaskClassification {
+function script:Invoke-TaskClassification {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Prompt,
