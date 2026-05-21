@@ -24,3 +24,4 @@ _chunks/
 *.tmp
 
 LLM_CONTEXT.md
+PYTHON_MACOS_PORTING_CONTEXT.md
