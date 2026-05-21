@@ -90,7 +90,7 @@ function Test-PersonNameSegment {
                 return $false
             }
 
-            if ($word -notmatch '^[A-ZÀ-Ý][a-zà-ÿ''-]+$') {
+            if ($word -notmatch '^[\p{Lu}\p{Lt}][\p{L}\p{M}''-]+$') {
                 return $false
             }
         }
@@ -142,6 +142,7 @@ function Get-CallInfo {
     }
 
     Sync-SummaryPeopleFromTitle -SummaryPath $summaryPath -Title $titleInfo.Title
+    Set-SummaryTaskFrontmatter -SummaryPath $summaryPath -TaskName $TaskName
 
     [pscustomobject]@{
         Task = $TaskName
@@ -305,6 +306,65 @@ function Sync-SummaryPeopleFromTitle {
         ('tags: [' + ($tags -join ', ') + ']'),
         '---'
     ) + $body
+
+    [IO.File]::WriteAllText($SummaryPath, (($newLines -join [Environment]::NewLine).Trim() + [Environment]::NewLine), $Utf8NoBom)
+}
+
+function Set-SummaryTaskFrontmatter {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SummaryPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$TaskName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TaskName)) {
+        return
+    }
+
+    $content = [IO.File]::ReadAllText($SummaryPath, [Text.Encoding]::UTF8).Trim()
+    $lines = @($content -split '\r?\n')
+    $frontmatterStart = 0
+    while ($frontmatterStart -lt $lines.Count -and [string]::IsNullOrWhiteSpace($lines[$frontmatterStart])) {
+        $frontmatterStart++
+    }
+
+    $taskLine = ('task: "[[{0}]]"' -f $TaskName)
+    $frontmatterEnd = -1
+    if ($frontmatterStart -lt $lines.Count -and $lines[$frontmatterStart].Trim() -eq '---') {
+        for ($i = $frontmatterStart + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i].Trim() -eq '---') {
+                $frontmatterEnd = $i
+                break
+            }
+        }
+    }
+
+    if ($frontmatterEnd -lt 0) {
+        $newLines = @('---', $taskLine, 'tags: [call]', '---', '') + $lines
+        [IO.File]::WriteAllText($SummaryPath, (($newLines -join [Environment]::NewLine).Trim() + [Environment]::NewLine), $Utf8NoBom)
+        return
+    }
+
+    $prefix = @()
+    $metadata = @()
+    for ($i = $frontmatterStart + 1; $i -lt $frontmatterEnd; $i++) {
+        $line = $lines[$i]
+        if ($line -match '^\s*task\s*:') {
+            continue
+        }
+
+        if ($line -match '^\s*(data|ora)\s*:') {
+            $prefix += $line
+        } else {
+            $metadata += $line
+        }
+    }
+
+    $bodyStart = $frontmatterEnd + 1
+    $body = if ($bodyStart -lt $lines.Count) { @($lines[$bodyStart..($lines.Count - 1)]) } else { @() }
+    $newLines = @('---') + $prefix + $taskLine + $metadata + @('---') + $body
 
     [IO.File]::WriteAllText($SummaryPath, (($newLines -join [Environment]::NewLine).Trim() + [Environment]::NewLine), $Utf8NoBom)
 }
