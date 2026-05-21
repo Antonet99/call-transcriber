@@ -74,6 +74,7 @@ Call/
 - `curl.exe`.
 - Variabile ambiente `GROQ_API_KEY`.
 - Gemini CLI disponibile come comando `gemini`.
+- `ripgrep` disponibile come comando `rg` per evitare fallback lenti della Gemini CLI.
 - Claude CLI disponibile come comando `claude` solo se si usa `-p claude`.
 
 ### Installazione dipendenze
@@ -82,6 +83,7 @@ Esempio con `winget`:
 
 ```powershell
 winget install Gyan.FFmpeg
+winget install BurntSushi.ripgrep.MSVC
 ```
 
 Configurare la chiave Groq:
@@ -346,6 +348,15 @@ Verifica:
 
 ```powershell
 gemini --version
+```
+
+### Ripgrep non trovato
+
+Gemini CLI puo' stampare `Ripgrep is not available. Falling back to GrepTool.` quando `rg` non e' nel PATH del processo che ha avviato il watcher. Installa ripgrep e riavvia il terminale o il watcher:
+
+```powershell
+winget install BurntSushi.ripgrep.MSVC
+rg --version
 ```
 
 ### La call finisce nella root di `completate/Task/`

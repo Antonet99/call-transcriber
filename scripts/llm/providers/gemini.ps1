@@ -10,6 +10,44 @@ function script:Test-LlmProviderAvailable {
     return [bool](Get-Command gemini -ErrorAction SilentlyContinue)
 }
 
+function script:Get-RipgrepDirectory {
+    $rg = Get-Command rg -ErrorAction SilentlyContinue
+    if ($rg) {
+        return Split-Path -Parent $rg.Source
+    }
+
+    $codexBin = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin'
+    if (Test-Path -LiteralPath $codexBin) {
+        $match = Get-ChildItem -LiteralPath $codexBin -Recurse -Filter rg.exe -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($match) {
+            return $match.DirectoryName
+        }
+    }
+
+    $wingetRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
+    if (Test-Path -LiteralPath $wingetRoot) {
+        $match = Get-ChildItem -LiteralPath $wingetRoot -Recurse -Filter rg.exe -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($match) {
+            return $match.DirectoryName
+        }
+    }
+
+    return ''
+}
+
+function script:Remove-GeminiCliNoise {
+    param(
+        [Parameter(Mandatory = $false)]
+        [array]$Lines = @()
+    )
+
+    return @($Lines |
+        ForEach-Object { $_.ToString() } |
+        Where-Object { $_ -notmatch '^(?i)Ripgrep is not available\. Falling back to GrepTool\.\s*$' })
+}
+
 function script:Invoke-GeminiText {
     param(
         [Parameter(Mandatory = $true)]
@@ -26,13 +64,21 @@ function script:Invoke-GeminiText {
 
     $oldTerm = $env:TERM
     $oldColorTerm = $env:COLORTERM
+    $oldPath = $env:PATH
+    $oldErrorActionPreference = $ErrorActionPreference
     $env:TERM = 'xterm-256color'
     $env:COLORTERM = 'truecolor'
+    $ripgrepDir = Get-RipgrepDirectory
+    if (-not [string]::IsNullOrWhiteSpace($ripgrepDir) -and (($env:PATH -split ';') -notcontains $ripgrepDir)) {
+        $env:PATH = "$ripgrepDir;$env:PATH"
+    }
 
     try {
+        $ErrorActionPreference = 'Continue'
         $lines = @($Prompt | & $gemini.Source -p ' ' --model $Model --output-format text --skip-trust 2>&1)
+        $cleanLines = @(Remove-GeminiCliNoise -Lines $lines)
         if ($LASTEXITCODE -ne 0) {
-            $detail = (($lines | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine).Trim()
+            $detail = ($cleanLines -join [Environment]::NewLine).Trim()
             if ([string]::IsNullOrWhiteSpace($detail)) {
                 throw "Gemini CLI ha restituito codice di uscita $LASTEXITCODE."
             }
@@ -42,9 +88,11 @@ function script:Invoke-GeminiText {
     } finally {
         $env:TERM = $oldTerm
         $env:COLORTERM = $oldColorTerm
+        $env:PATH = $oldPath
+        $ErrorActionPreference = $oldErrorActionPreference
     }
 
-    return (($lines | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine).Trim()
+    return ($cleanLines -join [Environment]::NewLine).Trim()
 }
 
 function script:Add-GeminiSummaryInstructions {
