@@ -1,0 +1,27 @@
+[project]
+name = "call-pipeline"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "groq",
+    "anthropic",
+    "google-genai",
+    "watchdog",
+    "python-frontmatter",
+    "typer",
+    "pyyaml",
+]
+
+[project.scripts]
+process-call    = "scripts.process_call:main"
+watch-calls     = "scripts.watch_calls:main"
+rebuild-indexes = "scripts.rebuild_indexes:main"
+archive-calls   = "scripts.archive_old_calls:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.backends.legacy:build"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scripts*"]
