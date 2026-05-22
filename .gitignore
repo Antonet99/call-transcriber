@@ -1,14 +1,23 @@
 .env
 
+# Dati e output
 completate/
 da_processare/
 logs/
-.obsidian/
 assets/
 
+# Obsidian e tool locali
+.obsidian/
 .gemini/
 .claude/
 
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Audio / Video
 *.mp3
 *.mp4
 *.m4a
@@ -22,8 +31,10 @@ assets/
 *.mov
 *.avi
 
+# Temporanei
 _chunks/
 *.tmp
 
+# Documenti di contesto non tracciati
 LLM_CONTEXT.md
 PYTHON_MACOS_PORTING_CONTEXT.md
