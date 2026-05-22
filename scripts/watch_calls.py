@@ -5,11 +5,25 @@ Avvia la pipeline process_call.process() per ogni file audio/video rilevato.
 from __future__ import annotations
 
 import argparse
+import logging
+import sys
 import threading
 from pathlib import Path
 
 from watchdog.events import FileCreatedEvent, FileMovedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
+
+
+def _setup_logging(root: Path) -> None:
+    log_dir = root / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "watcher.log"
+    fmt = "%(asctime)s %(levelname)s %(message)s"
+    handlers: list[logging.Handler] = [
+        logging.FileHandler(log_file, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ]
+    logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers, force=True)
 
 _SUPPORTED_EXT = {
     ".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".webm", ".wma",
@@ -44,7 +58,7 @@ class _CallHandler(FileSystemEventHandler):
                     **self._extra,
                 )
             except Exception as exc:
-                print(f"[error] Pipeline fallita per {path}: {exc}")
+                logging.error("Pipeline fallita per %s: %s", path, exc)
             finally:
                 with self._lock:
                     self._in_progress.discard(path)
@@ -69,6 +83,8 @@ def watch(
     if root is None:
         root = Path(__file__).parent.parent
 
+    _setup_logging(root)
+
     watch_dir = root / "da_processare"
     watch_dir.mkdir(parents=True, exist_ok=True)
 
@@ -76,13 +92,13 @@ def watch(
     observer = Observer()
     observer.schedule(handler, str(watch_dir), recursive=False)
     observer.start()
-    print(f"Watcher avviato su: {watch_dir}")
-    print("Premi Ctrl+C per fermare.")
+    logging.info("Watcher avviato su: %s", watch_dir)
+    logging.info("Premi Ctrl+C per fermare.")
 
     # Elabora file già presenti
     for existing in watch_dir.iterdir():
         if existing.is_file() and existing.suffix.lower() in _SUPPORTED_EXT:
-            print(f"File preesistente rilevato: {existing.name}")
+            logging.info("File preesistente rilevato: %s", existing.name)
             handler._handle(str(existing))
 
     try:

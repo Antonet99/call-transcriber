@@ -4,12 +4,11 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "groq",
-    "anthropic",
-    "google-genai",
     "watchdog",
     "python-frontmatter",
     "typer",
     "pyyaml",
+    "python-dotenv",
 ]
 
 [project.scripts]
@@ -19,8 +18,8 @@ rebuild-indexes = "scripts.rebuild_indexes:main"
 archive-calls   = "scripts.archive_old_calls:main"
 
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]

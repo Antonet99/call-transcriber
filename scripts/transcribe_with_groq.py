@@ -1,4 +1,4 @@
-"""Trascrizione audio via Groq Whisper con chunking automatico per file > 19 MB."""
+"""Trascrizione audio via Groq Whisper con chunking automatico per file > soglia MB."""
 from __future__ import annotations
 
 import math
@@ -10,11 +10,9 @@ from pathlib import Path
 
 from groq import Groq
 
+import scripts.settings as _cfg
 from scripts.audio.ffmpeg import compress_audio, get_duration, segment_audio
 
-_MAX_MB: float = 19.0
-_CHUNK_TARGET_MB: float = 18.0
-_DEFAULT_MODEL = "whisper-large-v3-turbo"
 _UTF8 = "utf-8"
 
 
@@ -41,10 +39,14 @@ def _compress_if_needed(src: Path, tmp_dir: Path, max_mb: float) -> Path:
 def transcribe(
     audio_path: Path,
     output_path: Path,
-    model: str = _DEFAULT_MODEL,
-    max_mb: float = _MAX_MB,
-    chunk_target_mb: float = _CHUNK_TARGET_MB,
+    model: str = "",
+    max_mb: float = 0.0,
+    chunk_target_mb: float = 0.0,
 ) -> str:
+    model = model or _cfg.GROQ_WHISPER_MODEL
+    max_mb = max_mb or _cfg.TRANSCRIPTION_MAX_MB
+    chunk_target_mb = chunk_target_mb or _cfg.TRANSCRIPTION_CHUNK_TARGET_MB
+
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise EnvironmentError("GROQ_API_KEY non impostata.")
@@ -68,6 +70,7 @@ def transcribe(
         chunks = segment_audio(audio_path, tmp_dir / "_chunks", chunk_seconds)
         parts: list[str] = []
         for i, chunk in enumerate(chunks, 1):
+            print(f"  [trascrizione] Chunk {i}/{len(chunks)}...")
             compressed = _compress_if_needed(chunk, tmp_dir, max_mb)
             part_text = _transcribe_single(client, compressed, model)
             parts.append(f"[PARTE {i}]\n\n{part_text}")
@@ -83,7 +86,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Trascrivi audio con Groq Whisper.")
     parser.add_argument("--audio-path", required=True, type=Path)
     parser.add_argument("--output-path", type=Path, default=None)
-    parser.add_argument("--model", default=_DEFAULT_MODEL)
+    parser.add_argument("--model", default="")
     args = parser.parse_args()
 
     out = args.output_path or args.audio_path.parent / "trascrizione.txt"

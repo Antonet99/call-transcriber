@@ -11,6 +11,7 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 
+import scripts.settings as _cfg
 from scripts.obsidian import frontmatter as fm
 
 _DATE_PATTERN = re.compile(r'^(\d{4}-\d{2}-\d{2})\s+\d{2}\.\d{2}\s+-\s+')
@@ -40,7 +41,9 @@ def _update_kanban_links(kanban_path: Path, call_dir_name: str) -> None:
     kanban_path.write_text(updated, encoding=_UTF8)
 
 
-def archive(root: Path, days: int = 10) -> dict[str, int]:
+def archive(root: Path, days: int | None = None) -> dict[str, int]:
+    if days is None:
+        days = _cfg.ARCHIVE_DAYS
     task_root = root / "completate" / "Task"
     if not task_root.exists():
         return {"archived": 0, "skipped": 0}
@@ -88,7 +91,7 @@ def archive(root: Path, days: int = 10) -> dict[str, int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Archivia call più vecchie di N giorni.")
-    parser.add_argument("--days", type=int, default=10)
+    parser.add_argument("--days", type=int, default=None)
     parser.add_argument("--root-path", type=Path, default=None)
     args = parser.parse_args()
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import scripts.settings as _cfg
+
 
 # ---------------------------------------------------------------------------
 # Prompt assembly
@@ -16,7 +18,7 @@ def build_summary_prompt(prompt_path: Path, transcript: str) -> str:
 
 def build_task_prompt(task_names: list[str], title: str, summary: str) -> str:
     task_list = "\n".join(f"- {t}" for t in task_names)
-    trimmed = summary[:5000] if len(summary) > 5000 else summary
+    trimmed = summary[:_cfg.TASK_PROMPT_SUMMARY_TRUNCATE]
     return (
         "Devi classificare una call già riassunta dentro una delle cartelle task esistenti.\n\n"
         "Rispondi solo con il nome esatto di una cartella tra quelle elencate. "
@@ -28,7 +30,7 @@ def build_task_prompt(task_names: list[str], title: str, summary: str) -> str:
 
 
 def build_kanban_prompt(summary: str, kanban_content: str, call_wikilink: str, call_label: str) -> str:
-    trimmed = summary[:6000] if len(summary) > 6000 else summary
+    trimmed = summary[:_cfg.KANBAN_PROMPT_SUMMARY_TRUNCATE]
     return (
         "Leggi il riassunto di questa call e la Kanban di progetto.\n"
         "Estrai solo nuove attivita' operative concrete o idee implementabili che emergono "
@@ -37,7 +39,7 @@ def build_kanban_prompt(summary: str, kanban_content: str, call_wikilink: str, c
         "Usa solo contenuti presenti nel riassunto. Non inventare nulla.\n"
         "Rispondi solo con righe Markdown nel formato esatto (una per riga):\n"
         f"- [ ] Azione concreta #tag #contesto [[{call_wikilink}|{call_label}]]\n"
-        "Massimo 5 card. Se non ci sono attivita' utili, rispondi esattamente: NONE\n\n"
+        f"Massimo {_cfg.KANBAN_MAX_CARDS_PER_CALL} card. Se non ci sono attivita' utili, rispondi esattamente: NONE\n\n"
         "---\n\n"
         f"Riassunto call:\n{trimmed}\n\n"
         "---\n\n"

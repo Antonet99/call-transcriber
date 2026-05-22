@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import scripts.settings as _cfg
 from scripts.obsidian import frontmatter as fm
 
 _UTF8 = "utf-8"
@@ -44,8 +45,8 @@ def _parse_dir_name(name: str) -> tuple[str, str, str] | None:
 def _short_title(title: str) -> str:
     clean = re.sub(r'[#*_`]', '', title).strip()
     words = clean.split()
-    if len(words) > 6:
-        clean = " ".join(words[:6])
+    if len(words) > _cfg.INDEX_TITLE_MAX_WORDS:
+        clean = " ".join(words[:_cfg.INDEX_TITLE_MAX_WORDS])
     return _safe_name(clean)
 
 
@@ -256,8 +257,8 @@ def rebuild(root: Path) -> dict:
     else:
         global_lines.append("- Nessuna task presente.")
 
-    global_lines += ["", "## Ultime 10 call"]
-    latest = sorted(all_calls, key=lambda c: c["directory"].name, reverse=True)[:10]
+    global_lines += ["", f"## Ultime {_cfg.INDEX_LATEST_CALLS_COUNT} call"]
+    latest = sorted(all_calls, key=lambda c: c["directory"].name, reverse=True)[:_cfg.INDEX_LATEST_CALLS_COUNT]
     if latest:
         for call in latest:
             sname = call["summary_path"].stem

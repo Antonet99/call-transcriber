@@ -18,6 +18,7 @@ from scripts.llm import common as llm_common
 from scripts.llm.providers.base import LlmProvider
 from scripts.obsidian import frontmatter as fm
 from scripts.obsidian import indexes as obs_indexes
+import scripts.settings as _cfg
 
 _UTF8 = "utf-8"
 _AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".webm", ".wma"}
@@ -31,6 +32,10 @@ ProviderName = Literal["gemini", "claude", "codex"]
 # ---------------------------------------------------------------------------
 
 def _load_provider(name: ProviderName) -> LlmProvider:
+    if name not in _cfg.ENABLED_PROVIDERS:
+        raise RuntimeError(
+            f"Provider '{name}' disabilitato. Abilitarlo in scripts/settings.py per usarlo."
+        )
     if name == "gemini":
         from scripts.llm.providers.gemini import GeminiProvider
         p = GeminiProvider()
@@ -252,11 +257,16 @@ def _summarize_with_fallback(
             _invoke_summary(provider, transcript_path, output_path, prompt_path, gemini_fallback_model)
             return "gemini", provider
         except Exception:
-            print(f"[warn] Fallback Gemini {gemini_fallback_model} fallito, passo a Claude.")
+            print(f"[warn] Fallback Gemini {gemini_fallback_model} fallito.")
+
+    if "claude" not in _cfg.ENABLED_PROVIDERS:
+        raise last_error or RuntimeError(
+            "Tutti i tentativi Gemini hanno fallito e Claude è disabilitato in settings.py."
+        )
 
     print("[warn] Fallback su Claude.")
     claude_provider = _load_provider("claude")
-    _invoke_summary(claude_provider, transcript_path, output_path, prompt_path, "claude-sonnet-4-6")
+    _invoke_summary(claude_provider, transcript_path, output_path, prompt_path, claude_provider.default_summary_model())
     if not output_path.exists():
         raise last_error or RuntimeError("Summary generation fallita.")
     return "claude", claude_provider
@@ -270,13 +280,21 @@ def process(
     input_path: Path,
     root: Path | None = None,
     keep_video: bool = False,
-    archive_max_mb: float = 19.0,
-    provider_name: ProviderName = "gemini",
+    archive_max_mb: float | None = None,
+    provider_name: ProviderName | None = None,
     summary_model: str = "",
     task_model: str = "",
-    gemini_capacity_attempts: int = 2,
-    gemini_fallback_model: str = "gemini-3-pro-preview",
+    gemini_capacity_attempts: int | None = None,
+    gemini_fallback_model: str | None = None,
 ) -> dict:
+    if archive_max_mb is None:
+        archive_max_mb = _cfg.ARCHIVE_MAX_MB
+    if provider_name is None:
+        provider_name = _cfg.ENABLED_PROVIDERS[0] if _cfg.ENABLED_PROVIDERS else "gemini"
+    if gemini_capacity_attempts is None:
+        gemini_capacity_attempts = _cfg.GEMINI_CAPACITY_ATTEMPTS
+    if gemini_fallback_model is None:
+        gemini_fallback_model = _cfg.GEMINI_FALLBACK_MODEL
     if root is None:
         root = Path(__file__).parent.parent
 
@@ -284,6 +302,9 @@ def process(
     if not resolved.exists():
         raise FileNotFoundError(f"File non trovato: {input_path}")
 
+    size_mb = resolved.stat().st_size / 1_000_000
+    print(f"[pipeline] Rilevato: {resolved.name} ({size_mb:.1f} MB)")
+    print(f"[pipeline] Attesa stabilizzazione file...")
     wait_stable(resolved)
     ext = resolved.suffix.lower()
 
@@ -300,11 +321,13 @@ def process(
     archive_audio_path = call_dir / "audio_compresso.m4a"
 
     if is_video:
+        print(f"[audio] Estrazione audio dal video...")
         _ffmpeg.extract_audio(resolved, audio_path)
     elif ext == ".m4a":
         shutil.copy2(resolved, call_dir / f"audio_originale{ext}")
         shutil.copy2(resolved, audio_path)
     else:
+        print(f"[audio] Conversione {ext} → m4a...")
         shutil.copy2(resolved, call_dir / f"audio_originale{ext}")
         _ffmpeg.convert_to_m4a(resolved, audio_path)
 
@@ -312,9 +335,12 @@ def process(
     summary_path = call_dir / "riassunto.md"
     prompt_path = Path(__file__).parent / "prompt_riassunto_call.md"
 
+    print(f"[trascrizione] Avvio Whisper ({_cfg.GROQ_WHISPER_MODEL})...")
     from scripts.transcribe_with_groq import transcribe
-    transcribe(audio_path, transcript_path)
+    transcript_text = transcribe(audio_path, transcript_path)
+    print(f"[trascrizione] Completata: {len(transcript_text)} caratteri")
 
+    print(f"[riassunto] Generazione con {provider_name} ({summary_model or 'modello default'})...")
     active_provider_name, active_provider = _summarize_with_fallback(
         root=root,
         transcript_path=transcript_path,
@@ -325,19 +351,26 @@ def process(
         gemini_attempts=gemini_capacity_attempts,
         gemini_fallback_model=gemini_fallback_model,
     )
+    if active_provider_name != provider_name:
+        print(f"[riassunto] Completato (fallback su {active_provider_name})")
+    else:
+        print(f"[riassunto] Completato")
 
     context_title = _extract_title_from_summary(summary_path)
     if not context_title:
         context_title = _safe_name(resolved.stem)
     people = fm.get_people(summary_path)
     context_title = _add_people_to_title(context_title, people)
+    print(f"[titolo] \"{context_title}\"")
 
     _set_summary_title(summary_path, context_title)
 
     final_call_name = f"{timestamp.strftime('%Y-%m-%d %H.%M')} - {context_title}"
     active_task_model = task_model if active_provider_name == provider_name else ""
+    print(f"[task] Classificazione in corso...")
     task_dir = _get_task_dir(root, summary_path, context_title, active_provider, active_task_model)
     task_name = task_dir.name if (task_dir.parent == root / "completate" / "Task") else ""
+    print(f"[task] Assegnata: {task_dir.name}")
 
     final_call_dir = _unique_path(task_dir / final_call_name)
     call_dir.rename(final_call_dir)
@@ -351,8 +384,11 @@ def process(
     title_from_dir = re.sub(r'^\d{4}-\d{2}-\d{2}\s+\d{2}\.\d{2}\s+-\s+', '', call_dir.name).strip()
     summary_path = _rename_summary(summary_path, title_from_dir)
 
+    print(f"[audio] Compressione (max {archive_max_mb} MB)...")
     duration = _ffmpeg.get_duration(audio_path)
     _ffmpeg.compress_audio(audio_path, archive_audio_path, archive_max_mb, duration)
+    compressed_mb = archive_audio_path.stat().st_size / 1_000_000
+    print(f"[audio] Compressa: {compressed_mb:.1f} MB")
 
     keep_names = {archive_audio_path.name, summary_path.name}
     for item in list(call_dir.iterdir()):
@@ -367,14 +403,18 @@ def process(
     elif not is_video:
         resolved.unlink(missing_ok=True)
 
+    print(f"[indici] Rigenerazione indici Obsidian...")
     obs_indexes.rebuild(root)
 
+    print(f"[kanban] Aggiornamento Kanban...")
     try:
         from scripts.update_project_kanban import update_from_summary
         if task_dir.exists():
             update_from_summary(summary_path, task_dir, active_provider_name)
     except Exception as exc:
         print(f"[warn] Kanban update non riuscita (non bloccante): {exc}")
+
+    print(f"[pipeline] Completato: {call_dir.name}")
 
     return {
         "call_directory": str(call_dir),

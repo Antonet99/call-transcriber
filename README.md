@@ -6,245 +6,193 @@ Il progetto prende file audio o video, estrae l'audio, lo trascrive con Groq Whi
 
 ## Funzionalita'
 
-- Watch automatico della cartella `da_processare/`.
+- Watch automatico della cartella `da_processare/` (avviato automaticamente al login via Task Scheduler).
 - Supporto a file audio e video comuni (`.m4a`, `.mp3`, `.wav`, `.mp4`, `.mkv`, `.mov`, ecc.).
 - Trascrizione con Groq Whisper (`whisper-large-v3-turbo`).
 - Riassunti Markdown dettagliati, non generici, con:
   - frontmatter YAML per Obsidian;
-  - titolo breve;
+  - titolo breve con nomi dei partecipanti;
   - sezioni granulari;
   - action item in tabella;
   - decisioni, dubbi, dipendenze e citazioni rilevanti.
-- Provider LLM modulari:
-  - Gemini come default;
-  - Claude come provider alternativo;
-  - Codex predisposto come provider futuro.
+- Provider LLM modulari via CLI (nessuna API key LLM necessaria):
+  - Gemini come provider principale;
+  - Claude come provider di fallback.
 - Classificazione automatica della call dentro una cartella task.
+- Archiviazione automatica delle call piu' vecchie di N giorni.
+- Aggiornamento automatico della Kanban di progetto con card estratte dal riassunto.
 - Compressione dell'audio archiviato sotto una soglia configurabile.
 - Indici Obsidian auto-generati:
   - indice globale;
-  - indice per task;
-  - wikilink relativi.
+  - indice per task con sezione archivio.
 
 ## Architettura
 
 ```text
 Call/
-  da_processare/
+  da_processare/           ← copia qui i file da processare
   completate/
-    README.md
+    README.md              ← indice globale auto-generato
     Task/
       <nome task>/
-        README.md
+        README.md          ← indice task auto-generato
+        Kanban.md          ← kanban auto-aggiornata
         <YYYY-MM-DD HH.mm - titolo>/
           <titolo call>.md
           audio_compresso.m4a
+        archivio/          ← call piu' vecchie di ARCHIVE_DAYS
   logs/
   scripts/
-    watch_calls.ps1
-    process_call.ps1
-    transcribe_with_groq.ps1
+    process_call.py        ← orchestratore principale
+    watch_calls.py         ← watcher cartella
+    transcribe_with_groq.py
+    rebuild_indexes.py
+    archive_old_calls.py
+    update_project_kanban.py
+    settings.py            ← configurazione centralizzata
     prompt_riassunto_call.md
-    rebuild_indexes.ps1
-    summarize_with_gemini.ps1
-    summarize_with_claude.ps1
-    summarize_with_codex.ps1
+    register_startup_task.ps1
+    audio/
+      ffmpeg.py
     llm/
-      common.ps1
+      common.py
       providers/
-        gemini.ps1
-        claude.ps1
-        codex.ps1
+        base.py
+        gemini.py
+        claude.py
+  .env                     ← chiavi API (non tracciato)
+  pyproject.toml
 ```
 
-### Componenti principali
+## Requisiti di sistema
 
-- `scripts/watch_calls.ps1`: osserva `da_processare/` e lancia la pipeline quando arriva un file supportato.
-- `scripts/process_call.ps1`: orchestratore principale. Stabilizza il file, prepara audio, trascrive, riassume, classifica, comprime, pulisce e rigenera gli indici.
-- `scripts/transcribe_with_groq.ps1`: invia audio a Groq Whisper. Per file grandi crea chunk temporanei e ricompone la trascrizione.
-- `scripts/prompt_riassunto_call.md`: prompt che guida il provider LLM a produrre un riassunto fedele e strutturato.
-- `scripts/rebuild_indexes.ps1`: rigenera gli indici Markdown della knowledge base.
-- `scripts/llm/common.ps1`: funzioni comuni ai provider LLM.
-- `scripts/llm/providers/*.ps1`: moduli provider-specific.
+- Python 3.11+
+- `ffmpeg` e `ffprobe` nel PATH
+- Gemini CLI (`gemini`) autenticato
+- Claude CLI (`claude`) autenticato
+- `ripgrep` (`rg`) nel PATH (consigliato per performance Gemini CLI)
 
-## Requisiti
-
-- Windows PowerShell.
-- `ffmpeg` e `ffprobe` disponibili nel PATH.
-- `curl.exe`.
-- Variabile ambiente `GROQ_API_KEY`.
-- Gemini CLI disponibile come comando `gemini`.
-- `ripgrep` disponibile come comando `rg` per evitare fallback lenti della Gemini CLI.
-- Claude CLI disponibile come comando `claude` solo se si usa `-p claude`.
-
-### Installazione dipendenze
-
-Esempio con `winget`:
+Installazione con `winget`:
 
 ```powershell
 winget install Gyan.FFmpeg
 winget install BurntSushi.ripgrep.MSVC
 ```
 
-Configurare la chiave Groq:
+## Installazione
 
 ```powershell
-$env:GROQ_API_KEY = "..."
+python -m venv .venv
+.\.venv\Scripts\pip install -e .
 ```
 
-Per renderla persistente:
+Crea il file `.env` nella root del progetto:
+
+```
+GROQ_API_KEY=<la-tua-chiave-groq>
+```
+
+Gemini e Claude vengono invocati tramite CLI; non serve nessuna API key aggiuntiva.
+
+## Avvio automatico al login
+
+Registra il watcher come task di Windows (una tantum):
 
 ```powershell
-[Environment]::SetEnvironmentVariable("GROQ_API_KEY", "...", "User")
+.\scripts\register_startup_task.ps1
 ```
 
-Gemini CLI deve essere gia' autenticato. Verifica rapida:
+Da questo momento `watch_calls.py` si avvia automaticamente ad ogni login. Il watcher elabora anche i file gia' presenti in `da_processare/` all'avvio.
+
+Comandi utili:
 
 ```powershell
-gemini --version
+Start-ScheduledTask -TaskName 'CallWatcher'   # avvia subito
+Stop-ScheduledTask  -TaskName 'CallWatcher'   # ferma
+Unregister-ScheduledTask -TaskName 'CallWatcher' -Confirm:$false  # rimuovi
 ```
 
-## Avvio rapido
-
-1. Crea o verifica che esista `da_processare/`.
-2. Crea le task sotto `completate/Task/`, ad esempio:
-
-```text
-completate/
-  Task/
-    Italgas - MCP Server/
-    Integrazione Tabella Z_AUTH/
-```
-
-3. Avvia il watcher:
-
-```bat
-scripts\start_watcher.cmd
-```
-
-4. Copia una registrazione in `da_processare/`.
-5. A fine processo trovi la call in:
-
-```text
-completate/Task/<task>/<data ora - titolo>/
-```
-
-## Uso manuale
-
-Per processare una singola registrazione senza watcher:
+## Avvio manuale del watcher
 
 ```powershell
-scripts\process_call.ps1 -InputPath .\da_processare\call.m4a
+.\.venv\Scripts\python.exe scripts\watch_calls.py
 ```
 
-Per mantenere il video originale dopo la lavorazione:
+## Uso manuale (singola call)
 
 ```powershell
-scripts\process_call.ps1 -InputPath .\da_processare\call.mp4 -KeepVideo
+.\.venv\Scripts\python.exe scripts\process_call.py --input-path .\da_processare\call.m4a
 ```
 
-Per cambiare la soglia massima dell'audio archiviato:
+Mantenere il video originale dopo la lavorazione:
 
 ```powershell
-scripts\process_call.ps1 -InputPath .\da_processare\call.m4a -ArchiveMaxMB 25
+.\.venv\Scripts\python.exe scripts\process_call.py --input-path .\da_processare\call.mp4 --keep-video
+```
+
+## Configurazione
+
+Tutti i parametri sono in `scripts/settings.py`:
+
+```python
+# Provider abilitati (ordine = priorita' / fallback)
+ENABLED_PROVIDERS = ["gemini", "claude"]
+
+# Modelli Gemini CLI
+GEMINI_SUMMARY_MODEL  = "gemini-3.1-pro-preview"
+GEMINI_TASK_MODEL     = "gemini-3-flash-preview"
+GEMINI_FALLBACK_MODEL = "gemini-3-flash-preview"
+GEMINI_CAPACITY_ATTEMPTS = 2
+
+# Modelli e effort Claude CLI
+CLAUDE_SUMMARY_MODEL  = "claude-sonnet-4-6"
+CLAUDE_SUMMARY_EFFORT = "medium"         # low | medium | high | xhigh | max
+CLAUDE_TASK_MODEL     = "claude-sonnet-4-6"
+CLAUDE_TASK_EFFORT    = "low"
+CLAUDE_LIGHT_MODEL    = "claude-haiku-4-5"
+CLAUDE_LIGHT_EFFORT   = "low"
+CLAUDE_SUBAGENT_MODEL = "claude-haiku-4-5"
+CLAUDE_SUBAGENT_EFFORT = "high"
+
+# Groq / Trascrizione
+GROQ_WHISPER_MODEL        = "whisper-large-v3-turbo"
+TRANSCRIPTION_MAX_MB      = 19.0
+TRANSCRIPTION_CHUNK_TARGET_MB = 18.0
+
+# Pipeline
+ARCHIVE_MAX_MB  = 19.0
+ARCHIVE_DAYS    = 10
+
+# Kanban
+KANBAN_MAX_CARDS_PER_CALL = 5
 ```
 
 ## Provider LLM
 
-Gemini e' il provider predefinito. Avviando la pipeline senza flag, `process_call.ps1` usa:
+Gemini e' il provider predefinito. Il flusso di fallback e' il seguente:
 
-- `gemini-3.1-pro-preview` per il riassunto;
-- `gemini-3-flash-preview` per la classificazione task.
+1. `GEMINI_CAPACITY_ATTEMPTS` tentativi con `GEMINI_SUMMARY_MODEL`
+2. 1 tentativo con `GEMINI_FALLBACK_MODEL`
+3. Fallback a Claude (`CLAUDE_SUMMARY_MODEL` con effort `CLAUDE_SUMMARY_EFFORT`)
 
-Se Gemini restituisce un errore di capacita' sul modello, per esempio `MODEL_CAPACITY_EXHAUSTED` o `RESOURCE_EXHAUSTED`, la pipeline usa questa sequenza:
+Il provider Gemini usa i subagent locali `.gemini/agents/` se presenti.
 
-- 2 tentativi con `gemini-3.1-pro-preview`;
-- 1 tentativo con `gemini-3-pro-preview`;
-- fallback a Claude se anche Gemini 3 Pro non conclude.
+Il provider Claude passa al volo due subagent per la revisione del riassunto:
 
-Nel fallback Claude usa:
-
-- `claude-sonnet-4-6` per il riassunto, con effort `medium`;
-- subagent Claude `claude-haiku-4-5`, con effort `high`;
-- classificazione task con il provider Claude gia' attivo dopo il fallback.
-
-```powershell
-scripts\process_call.ps1 -InputPath .\da_processare\call.m4a
-```
-
-Per selezionare un provider diverso usa `-p` o `-Provider`:
-
-```powershell
-scripts\process_call.ps1 -InputPath .\da_processare\call.m4a -p claude
-```
-
-Provider disponibili:
-
-- `gemini`: default operativo.
-- `claude`: provider alternativo mantenuto per compatibilita'.
-- `codex`: placeholder futuro; oggi fallisce con un messaggio esplicito.
-
-Puoi sovrascrivere i modelli:
-
-```powershell
-scripts\process_call.ps1 `
-  -InputPath .\da_processare\call.m4a `
-  -SummaryModel gemini-3.1-pro-preview `
-  -TaskModel gemini-3-flash-preview
-```
-
-Puoi anche cambiare il numero di tentativi Gemini prima del fallback:
-
-```powershell
-scripts\process_call.ps1 `
-  -InputPath .\da_processare\call.m4a `
-  -GeminiCapacityAttempts 3
-```
-
-Il modello Gemini intermedio e' configurabile, ma di default resta `gemini-3-pro-preview`:
-
-```powershell
-scripts\process_call.ps1 `
-  -InputPath .\da_processare\call.m4a `
-  -GeminiFallbackModel gemini-3-pro-preview
-```
-
-Gli entrypoint standalone sono:
-
-```powershell
-scripts\summarize_with_gemini.ps1 -TranscriptPath .\trascrizione.txt
-scripts\summarize_with_claude.ps1 -TranscriptPath .\trascrizione.txt
-scripts\summarize_with_codex.ps1 -TranscriptPath .\trascrizione.txt
-```
-
-### Subagent
-
-Il provider Gemini puo' usare subagent locali in `.gemini/agents/` se presenti nella macchina.
-
-Il provider Claude definisce invece i subagent al volo via CLI, senza file tracciati nel repository:
-
-- `call-metadata-auditor`: controllo di persone, sistemi, tag e frontmatter.
-- `call-action-auditor`: controllo di decisioni, action item, dipendenze, domande aperte e citazioni.
+- `call-metadata-auditor` (`claude-haiku-4-5`, effort `high`): controlla persone, sistemi, tag e frontmatter.
+- `call-action-auditor` (`claude-haiku-4-5`, effort `high`): controlla decisioni, action item, dipendenze e citazioni.
 
 ## Output
 
-Ogni call archiviata contiene:
+Ogni call elaborata produce:
 
 ```text
-<titolo call>.md
-audio_compresso.m4a
+completate/Task/<task>/<YYYY-MM-DD HH.mm - Titolo>/
+  <Titolo>.md            ← riassunto Markdown
+  audio_compresso.m4a    ← audio compresso sotto ARCHIVE_MAX_MB
 ```
 
-Nelle versioni recenti il file del riassunto viene rinominato usando il titolo della cartella, senza data e ora. Per esempio:
-
-```text
-2026-05-11 11.37 - Marco e Daniela, Autenticazione Claude su Databricks Italgas/
-  Marco e Daniela, Autenticazione Claude su Databricks Italgas.md
-```
-
-Questo evita nodi duplicati chiamati tutti `riassunto` nel graph di Obsidian. Il nome legacy `riassunto.md` puo' ancora comparire come file temporaneo o in archivi vecchi, ma `rebuild_indexes.ps1` lo rinomina automaticamente quando rigenera gli indici.
-
-Esempio di frontmatter:
+Esempio di frontmatter generato:
 
 ```yaml
 ---
@@ -253,124 +201,72 @@ ora: "11:37"
 task: "[[Italgas - MCP Server]]"
 persone: [Daniela, Marco]
 sistemi: [Databricks, Gemini CLI]
-tags: [call, italgas, mcp-server, autenticazione]
+tags: [call, italgas, mcp-server]
 ---
-```
-
-Subito dopo il frontmatter il file usa sempre:
-
-```markdown
-# riassunto
-## Titolo breve della call
-```
-
-## Knowledge base Obsidian
-
-La cartella `completate/` puo' essere aperta direttamente come vault Obsidian.
-
-La pipeline genera:
-
-- `completate/README.md`: indice globale con task attive e ultime call.
-- `completate/Task/<task>/README.md`: indice delle call della singola task.
-
-I link sono wikilink Obsidian con path relativo, ad esempio:
-
-```markdown
-[[Task/Italgas - MCP Server/2026-05-13 11.37 - Autenticazione Databricks/riassunto|Autenticazione Databricks]]
-```
-
-Per rigenerare manualmente gli indici:
-
-```powershell
-scripts\rebuild_indexes.ps1
 ```
 
 ## Flusso end-to-end
 
 1. Il file viene copiato in `da_processare/`.
 2. Il watcher rileva il file.
-3. `process_call.ps1` aspetta che dimensione e timestamp siano stabili.
+3. Attesa finche' dimensione e timestamp sono stabili.
 4. `ffmpeg` estrae o converte l'audio in `audio.m4a`.
-5. Groq Whisper produce `trascrizione.txt`.
-6. Il provider LLM genera il Markdown del riassunto.
-7. Lo script normalizza titolo e frontmatter.
-8. Il provider LLM classifica la call rispetto alle task esistenti.
+5. Groq Whisper produce `trascrizione.txt` (con chunking automatico per file grandi).
+6. Gemini CLI genera il riassunto Markdown (con fallback automatico a Claude).
+7. Titolo e frontmatter vengono normalizzati.
+8. Gemini CLI classifica la call rispetto alle task esistenti.
 9. La cartella viene spostata sotto `completate/Task/<task>/`.
-10. Il file del riassunto viene rinominato con il titolo della call.
-11. L'audio viene compresso in `audio_compresso.m4a`.
-12. I file intermedi vengono rimossi.
-13. Gli indici Obsidian vengono rigenerati.
+10. L'audio viene compresso in `audio_compresso.m4a`.
+11. I file intermedi vengono rimossi; il file sorgente viene cancellato.
+12. Gli indici Obsidian vengono rigenerati.
+13. La Kanban del task viene aggiornata con le nuove card.
+
+## Knowledge base Obsidian
+
+La cartella `completate/` puo' essere aperta direttamente come vault Obsidian.
+
+La pipeline genera automaticamente:
+
+- `completate/README.md`: indice globale con task attive e ultime N call.
+- `completate/Task/<task>/README.md`: indice della singola task con call attive e archivio.
+
+Per rigenerare gli indici manualmente:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\rebuild_indexes.py
+```
+
+## Aggiornamento manuale Kanban
+
+```powershell
+.\.venv\Scripts\python.exe scripts\update_project_kanban.py `
+  --summary-path ".\completate\Task\<task>\<call>\<titolo>.md" `
+  --task-directory ".\completate\Task\<task>"
+```
 
 ## Sviluppo
 
 ### Aggiungere un provider LLM
 
-Per aggiungere un provider, crea un file in `scripts/llm/providers/` che esponga queste funzioni:
-
-```powershell
-Test-LlmProviderAvailable
-Invoke-SummaryGeneration
-Invoke-TaskClassification
-Get-DefaultSummaryModel
-Get-DefaultTaskModel
-```
-
-Poi aggiungi un entrypoint `scripts/summarize_with_<provider>.ps1` e registra il provider nel `ValidateSet` di `process_call.ps1`.
-
-Il provider puo' usare strumenti diversi, ma deve restituire sempre lo stesso formato finale: Markdown puro validabile da `scripts/llm/common.ps1`.
+1. Crea `scripts/llm/providers/<nome>.py` che estende `LlmProvider` (vedi `base.py`).
+2. Implementa `is_available`, `default_summary_model`, `default_task_model`, `invoke_summary`, `invoke_task_classification`, `invoke_light`.
+3. Aggiungi il nome a `ENABLED_PROVIDERS` in `settings.py`.
+4. Registra il caricamento in `_load_provider()` dentro `process_call.py` e `update_project_kanban.py`.
 
 ### File esclusi dal repository
 
-Registrazioni, audio compressi, trascrizioni, riassunti reali, log e vault generati sono esclusi da Git. Il repository deve contenere solo script, prompt, configurazioni e documentazione.
+Registrazioni, audio compressi, trascrizioni, riassunti, log, vault generati e `.env` sono esclusi da Git.
 
 ## Troubleshooting
 
-### `GROQ_API_KEY` mancante
+**`GROQ_API_KEY` mancante**: aggiungi la chiave al file `.env`.
 
-Imposta la variabile ambiente:
+**`ffmpeg` non trovato**: `winget install Gyan.FFmpeg` e riavvia il terminale.
 
-```powershell
-$env:GROQ_API_KEY = "..."
-```
+**`gemini` o `claude` non trovati**: verifica che le CLI siano installate e nel PATH.
 
-### `ffmpeg` o `ffprobe` non trovati
+**Ripgrep non trovato**: Gemini CLI stampa `Ripgrep is not available. Falling back to GrepTool.` se `rg` non e' nel PATH. `winget install BurntSushi.ripgrep.MSVC`.
 
-Verifica:
+**La call finisce nella root di `completate/Task/`**: il provider LLM non ha riconosciuto nessuna task. Verifica che le cartelle task abbiano nomi descrittivi.
 
-```powershell
-ffmpeg -version
-ffprobe -version
-```
-
-### Gemini CLI non trovato
-
-Verifica:
-
-```powershell
-gemini --version
-```
-
-### Ripgrep non trovato
-
-Gemini CLI puo' stampare `Ripgrep is not available. Falling back to GrepTool.` quando `rg` non e' nel PATH del processo che ha avviato il watcher. Installa ripgrep e riavvia il terminale o il watcher:
-
-```powershell
-winget install BurntSushi.ripgrep.MSVC
-rg --version
-```
-
-### La call finisce nella root di `completate/Task/`
-
-Succede quando il provider LLM non riesce a classificare la call in una task esistente. Controlla che le cartelle task siano presenti e abbiano nomi descrittivi.
-
-### Gli indici Obsidian non sono aggiornati
-
-Esegui:
-
-```powershell
-scripts\rebuild_indexes.ps1
-```
-
-## Stato del progetto
-
-Il progetto e' pensato per uso locale personale o di piccolo team. Non e' un servizio multiutente e non include database, embeddings o motori di ricerca esterni.
+**Gli indici non sono aggiornati**: esegui `rebuild_indexes.py` manualmente.

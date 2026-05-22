@@ -7,6 +7,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import scripts.settings as _cfg
+
 _UTF8 = "utf-8"
 _CARD_RE = re.compile(r'^\-\s+\[\s*\]')
 _SETTINGS_RE = re.compile(r'^%%\s*kanban:settings')

@@ -5,6 +5,7 @@ import argparse
 import re
 from pathlib import Path
 
+import scripts.settings as _cfg
 from scripts.llm import common as llm_common
 from scripts.obsidian import kanban
 
@@ -13,6 +14,11 @@ _UTF8 = "utf-8"
 
 
 def _load_provider(provider_name: str):
+    from scripts.settings import ENABLED_PROVIDERS
+    if provider_name not in ENABLED_PROVIDERS:
+        raise RuntimeError(
+            f"Provider '{provider_name}' disabilitato. Abilitarlo in scripts/settings.py."
+        )
     if provider_name == "gemini":
         from scripts.llm.providers.gemini import GeminiProvider
         return GeminiProvider()
@@ -22,20 +28,15 @@ def _load_provider(provider_name: str):
     raise ValueError(f"Provider non supportato: {provider_name}")
 
 
-def _default_light_model(provider_name: str) -> str:
-    if provider_name == "gemini":
-        return "gemini-2.0-flash"
-    if provider_name == "claude":
-        return "claude-haiku-4-5"
-    return ""
-
-
 def update_from_summary(
     summary_path: Path,
     task_dir: Path,
-    provider_name: str = "gemini",
+    provider_name: str | None = None,
     model: str = "",
 ) -> int:
+    if provider_name is None:
+        from scripts.settings import ENABLED_PROVIDERS
+        provider_name = ENABLED_PROVIDERS[0] if ENABLED_PROVIDERS else "gemini"
     provider = _load_provider(provider_name)
     if not provider.is_available():
         print(f"[kanban] Provider {provider_name} non disponibile, skip.")
@@ -58,9 +59,8 @@ def update_from_summary(
     if not call_label:
         call_label = summary_base
 
-    target_model = model or _default_light_model(provider_name)
     prompt = llm_common.build_kanban_prompt(summary, kanban_content, call_wiki, call_label)
-    answer = provider.invoke_light(prompt, target_model).strip()
+    answer = provider.invoke_light(prompt, model).strip()
 
     if not answer or answer.upper() == "NONE":
         print("[kanban] Nessuna card nuova da questa call.")
@@ -69,7 +69,7 @@ def update_from_summary(
     new_cards = [
         ln.strip() for ln in answer.splitlines()
         if _CARD_RE.match(ln.strip())
-    ][:5]
+    ][:_cfg.KANBAN_MAX_CARDS_PER_CALL]
 
     if not new_cards:
         print("[kanban] Risposta LLM non contiene card nel formato atteso.")
@@ -79,7 +79,7 @@ def update_from_summary(
     filtered = []
     for card in new_cards:
         card_lower = card.lower()
-        if not any(card_lower[:60] in e.lower() for e in existing_cards):
+        if not any(card_lower[:_cfg.KANBAN_DEDUP_LENGTH] in e.lower() for e in existing_cards):
             filtered.append(card)
 
     if not filtered:
