@@ -14,6 +14,9 @@ ENABLED_PROVIDERS: list[str] = [
     "claude",
 ]
 
+# Il tuo nome completo: viene escluso dai partecipanti nel titolo delle call
+MY_NAME: str = "Antonio Baio"
+
 # ---------------------------------------------------------------------------
 # Gemini CLI
 # ---------------------------------------------------------------------------
@@ -71,5 +74,5 @@ INDEX_LATEST_CALLS_COUNT: int = 10
 # ---------------------------------------------------------------------------
 # Kanban
 # ---------------------------------------------------------------------------
-KANBAN_MAX_CARDS_PER_CALL: int = 5
+KANBAN_MAX_CARDS_PER_CALL: int = 4
 KANBAN_DEDUP_LENGTH: int = 60

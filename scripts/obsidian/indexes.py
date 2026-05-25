@@ -10,6 +10,65 @@ from pathlib import Path
 import scripts.settings as _cfg
 from scripts.obsidian import frontmatter as fm
 
+
+def _people_for_title(fields: dict) -> list[str]:
+    """Primi due partecipanti (primo nome, esclude MY_NAME) da usare nel titolo."""
+    raw = fields.get("persone", [])
+    if isinstance(raw, str):
+        raw = [raw] if raw else []
+    my_parts = {p.lower() for p in _cfg.MY_NAME.split()} if _cfg.MY_NAME else set()
+    result: list[str] = []
+    for p in raw:
+        if {w.lower() for w in p.split()} & my_parts:
+            continue
+        result.append(p.split()[0])
+        if len(result) >= 2:
+            break
+    return result
+
+
+def _try_add_people_to_dir(call_dir: Path, kanban_path: Path, archived: bool = False) -> Path:
+    """Rinomina la cartella aggiungendo i partecipanti al titolo, se assenti."""
+    parsed = _parse_dir_name(call_dir.name)
+    if not parsed:
+        return call_dir
+    date_str, time_str, title = parsed
+
+    candidates = [f for f in call_dir.glob("*.md") if f.name != "README.md"]
+    if not candidates:
+        return call_dir
+
+    people = _people_for_title(fm.read_fields(candidates[0]))
+    if not people:
+        return call_dir
+
+    missing = [
+        p for p in people
+        if not re.search(r'(?i)(^|[\s,;-])' + re.escape(p) + r'($|[\s,;-])', title)
+    ]
+    if not missing:
+        return call_dir
+
+    new_title = f"{', '.join(missing)}, {title}"
+    time_compact = time_str.replace(":", ".")
+    new_name = _safe_name(f"{date_str} {time_compact} - {new_title}")
+    new_dir = call_dir.parent / new_name
+
+    if new_dir == call_dir or new_dir.exists():
+        return call_dir
+
+    call_dir.rename(new_dir)
+
+    if kanban_path.exists():
+        content = kanban_path.read_text(encoding=_UTF8)
+        old_link = f"[[archivio/{call_dir.name}/" if archived else f"[[{call_dir.name}/"
+        new_link = f"[[archivio/{new_name}/" if archived else f"[[{new_name}/"
+        updated = content.replace(old_link, new_link)
+        if updated != content:
+            kanban_path.write_text(updated, encoding=_UTF8)
+
+    return new_dir
+
 _UTF8 = "utf-8"
 _DIR_PATTERN = re.compile(r'^(\d{4}-\d{2}-\d{2})\s+(\d{2})\.(\d{2})\s+-\s+(.+)$')
 _INVALID_FNAME = set(r'\/:*?"<>|')
@@ -188,11 +247,13 @@ def rebuild(root: Path) -> dict:
     all_calls: list[dict] = []
 
     for task in tasks:
+        kanban_path = task / "Kanban.md"
         call_dirs = sorted(
             [d for d in task.iterdir() if d.is_dir() and d.name != "archivio"],
             key=lambda d: d.name,
             reverse=True,
         )
+        call_dirs = [_try_add_people_to_dir(d, kanban_path) for d in call_dirs]
         calls = [c for c in (_get_call_info(d, task.name) for d in call_dirs) if c]
 
         archive_dir = task / "archivio"
@@ -203,6 +264,7 @@ def rebuild(root: Path) -> dict:
                 key=lambda d: d.name,
                 reverse=True,
             )
+            archived_dirs = [_try_add_people_to_dir(d, kanban_path, archived=True) for d in archived_dirs]
             archived_calls = [c for c in (_get_call_info(d, task.name) for d in archived_dirs) if c]
 
         all_calls.extend(calls)

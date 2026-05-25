@@ -9,6 +9,7 @@ dependencies = [
     "typer",
     "pyyaml",
     "python-dotenv",
+    "rich",
 ]
 
 [project.scripts]

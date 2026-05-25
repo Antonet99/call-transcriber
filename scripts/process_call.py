@@ -13,12 +13,26 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+from rich.console import Console as _Console
+
 from scripts.audio import ffmpeg as _ffmpeg
 from scripts.llm import common as llm_common
 from scripts.llm.providers.base import LlmProvider
 from scripts.obsidian import frontmatter as fm
 from scripts.obsidian import indexes as obs_indexes
 import scripts.settings as _cfg
+
+_con = _Console()
+
+def _step(msg: str) -> None:
+    _con.print(f"  [cyan]·[/cyan] {msg}")
+
+def _ok(msg: str, elapsed: float = 0.0) -> None:
+    t = f" [dim]{elapsed:.0f}s[/dim]" if elapsed >= 1 else ""
+    _con.print(f"  [green]✓[/green] {msg}{t}")
+
+def _warn(msg: str) -> None:
+    _con.print(f"  [yellow]![/yellow] {msg}")
 
 _UTF8 = "utf-8"
 _AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".webm", ".wma"}
@@ -112,19 +126,22 @@ def _extract_title_from_summary(summary_path: Path) -> str:
 
 
 def _add_people_to_title(title: str, people: list[str]) -> str:
+    """Prefissa al titolo i primi due partecipanti (primo nome, esclude MY_NAME)."""
+    my_parts = {p.lower() for p in _cfg.MY_NAME.split()} if _cfg.MY_NAME else set()
+    first_names: list[str] = []
+    for p in people:
+        if {w.lower() for w in p.split()} & my_parts:
+            continue
+        first_names.append(p.split()[0])
+        if len(first_names) >= 2:
+            break
     missing = [
-        p for p in people
-        if not re.search(r'(?i)(^|[\s,;-])' + re.escape(p) + r'($|[\s,;-])', title)
+        fn for fn in first_names
+        if not re.search(r'(?i)(^|[\s,;-])' + re.escape(fn) + r'($|[\s,;-])', title)
     ]
     if not missing:
         return title
-    if len(missing) == 1:
-        prefix = missing[0]
-    elif len(missing) == 2:
-        prefix = f"{missing[0]} e {missing[1]}"
-    else:
-        prefix = ", ".join(missing[:-1]) + f" e {missing[-1]}"
-    return f"{prefix}, {title}"
+    return f"{', '.join(missing)}, {title}"
 
 
 def _set_summary_title(summary_path: Path, title: str) -> None:
@@ -302,12 +319,15 @@ def process(
     if not resolved.exists():
         raise FileNotFoundError(f"File non trovato: {input_path}")
 
+    t0 = time.perf_counter()
     size_mb = resolved.stat().st_size / 1_000_000
-    print(f"[pipeline] Rilevato: {resolved.name} ({size_mb:.1f} MB)")
-    print(f"[pipeline] Attesa stabilizzazione file...")
-    wait_stable(resolved)
-    ext = resolved.suffix.lower()
+    _con.rule(f"[bold]Call Transcriber[/bold]  [dim]{resolved.name} ({size_mb:.1f} MB)[/dim]")
 
+    with _con.status("  Attesa stabilizzazione file..."):
+        wait_stable(resolved)
+    _ok("File stabile")
+
+    ext = resolved.suffix.lower()
     if ext not in _AUDIO_EXT and ext not in _VIDEO_EXT:
         raise ValueError(f"Estensione non supportata: {ext}")
 
@@ -321,56 +341,61 @@ def process(
     archive_audio_path = call_dir / "audio_compresso.m4a"
 
     if is_video:
-        print(f"[audio] Estrazione audio dal video...")
-        _ffmpeg.extract_audio(resolved, audio_path)
+        with _con.status("  Estrazione audio dal video..."):
+            _ffmpeg.extract_audio(resolved, audio_path)
+        _ok("Audio estratto")
     elif ext == ".m4a":
         shutil.copy2(resolved, call_dir / f"audio_originale{ext}")
         shutil.copy2(resolved, audio_path)
     else:
-        print(f"[audio] Conversione {ext} → m4a...")
-        shutil.copy2(resolved, call_dir / f"audio_originale{ext}")
-        _ffmpeg.convert_to_m4a(resolved, audio_path)
+        with _con.status(f"  Conversione {ext} → m4a..."):
+            shutil.copy2(resolved, call_dir / f"audio_originale{ext}")
+            _ffmpeg.convert_to_m4a(resolved, audio_path)
+        _ok(f"Audio convertito")
 
     transcript_path = call_dir / "trascrizione.txt"
     summary_path = call_dir / "riassunto.md"
     prompt_path = Path(__file__).parent / "prompt_riassunto_call.md"
 
-    print(f"[trascrizione] Avvio Whisper ({_cfg.GROQ_WHISPER_MODEL})...")
     from scripts.transcribe_with_groq import transcribe
-    transcript_text = transcribe(audio_path, transcript_path)
-    print(f"[trascrizione] Completata: {len(transcript_text)} caratteri")
+    t = time.perf_counter()
+    with _con.status(f"  Trascrizione Whisper ({_cfg.GROQ_WHISPER_MODEL})..."):
+        transcript_text = transcribe(audio_path, transcript_path)
+    _ok(f"Trascrizione completata ({len(transcript_text)} caratteri)", time.perf_counter() - t)
 
-    print(f"[riassunto] Generazione con {provider_name} ({summary_model or 'modello default'})...")
-    active_provider_name, active_provider = _summarize_with_fallback(
-        root=root,
-        transcript_path=transcript_path,
-        output_path=summary_path,
-        prompt_path=prompt_path,
-        provider_name=provider_name,
-        model=summary_model,
-        gemini_attempts=gemini_capacity_attempts,
-        gemini_fallback_model=gemini_fallback_model,
-    )
+    t = time.perf_counter()
+    with _con.status(f"  Generazione riassunto ({provider_name})..."):
+        active_provider_name, active_provider = _summarize_with_fallback(
+            root=root,
+            transcript_path=transcript_path,
+            output_path=summary_path,
+            prompt_path=prompt_path,
+            provider_name=provider_name,
+            model=summary_model,
+            gemini_attempts=gemini_capacity_attempts,
+            gemini_fallback_model=gemini_fallback_model,
+        )
     if active_provider_name != provider_name:
-        print(f"[riassunto] Completato (fallback su {active_provider_name})")
+        _ok(f"Riassunto generato (fallback su {active_provider_name})", time.perf_counter() - t)
     else:
-        print(f"[riassunto] Completato")
+        _ok(f"Riassunto generato", time.perf_counter() - t)
 
     context_title = _extract_title_from_summary(summary_path)
     if not context_title:
         context_title = _safe_name(resolved.stem)
     people = fm.get_people(summary_path)
     context_title = _add_people_to_title(context_title, people)
-    print(f"[titolo] \"{context_title}\"")
+    _step(f"Titolo: [italic]{context_title}[/italic]")
 
     _set_summary_title(summary_path, context_title)
 
     final_call_name = f"{timestamp.strftime('%Y-%m-%d %H.%M')} - {context_title}"
     active_task_model = task_model if active_provider_name == provider_name else ""
-    print(f"[task] Classificazione in corso...")
-    task_dir = _get_task_dir(root, summary_path, context_title, active_provider, active_task_model)
+    t = time.perf_counter()
+    with _con.status("  Classificazione task..."):
+        task_dir = _get_task_dir(root, summary_path, context_title, active_provider, active_task_model)
     task_name = task_dir.name if (task_dir.parent == root / "completate" / "Task") else ""
-    print(f"[task] Assegnata: {task_dir.name}")
+    _ok(f"Task: [bold]{task_dir.name}[/bold]", time.perf_counter() - t)
 
     final_call_dir = _unique_path(task_dir / final_call_name)
     call_dir.rename(final_call_dir)
@@ -384,11 +409,12 @@ def process(
     title_from_dir = re.sub(r'^\d{4}-\d{2}-\d{2}\s+\d{2}\.\d{2}\s+-\s+', '', call_dir.name).strip()
     summary_path = _rename_summary(summary_path, title_from_dir)
 
-    print(f"[audio] Compressione (max {archive_max_mb} MB)...")
-    duration = _ffmpeg.get_duration(audio_path)
-    _ffmpeg.compress_audio(audio_path, archive_audio_path, archive_max_mb, duration)
+    t = time.perf_counter()
+    with _con.status(f"  Compressione audio (max {archive_max_mb} MB)..."):
+        duration = _ffmpeg.get_duration(audio_path)
+        _ffmpeg.compress_audio(audio_path, archive_audio_path, archive_max_mb, duration)
     compressed_mb = archive_audio_path.stat().st_size / 1_000_000
-    print(f"[audio] Compressa: {compressed_mb:.1f} MB")
+    _ok(f"Audio compresso: {compressed_mb:.1f} MB", time.perf_counter() - t)
 
     keep_names = {archive_audio_path.name, summary_path.name}
     for item in list(call_dir.iterdir()):
@@ -403,18 +429,23 @@ def process(
     elif not is_video:
         resolved.unlink(missing_ok=True)
 
-    print(f"[indici] Rigenerazione indici Obsidian...")
-    obs_indexes.rebuild(root)
+    with _con.status("  Rigenerazione indici Obsidian..."):
+        obs_indexes.rebuild(root)
+    _ok("Indici aggiornati")
 
-    print(f"[kanban] Aggiornamento Kanban...")
-    try:
-        from scripts.update_project_kanban import update_from_summary
-        if task_dir.exists():
-            update_from_summary(summary_path, task_dir, active_provider_name)
-    except Exception as exc:
-        print(f"[warn] Kanban update non riuscita (non bloccante): {exc}")
+    kanban_ok = False
+    with _con.status("  Aggiornamento Kanban..."):
+        try:
+            from scripts.update_project_kanban import update_from_summary
+            if task_dir.exists():
+                update_from_summary(summary_path, task_dir, active_provider_name)
+            kanban_ok = True
+        except Exception as exc:
+            _warn(f"Kanban non aggiornata (non bloccante): {exc}")
+    if kanban_ok:
+        _ok("Kanban aggiornata")
 
-    print(f"[pipeline] Completato: {call_dir.name}")
+    _con.rule(f"[bold green]Completato[/bold green]  [dim]{call_dir.name}[/dim]  [dim]{time.perf_counter() - t0:.0f}s totali[/dim]")
 
     return {
         "call_directory": str(call_dir),

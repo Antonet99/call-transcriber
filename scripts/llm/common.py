@@ -32,18 +32,22 @@ def build_task_prompt(task_names: list[str], title: str, summary: str) -> str:
 def build_kanban_prompt(summary: str, kanban_content: str, call_wikilink: str, call_label: str) -> str:
     trimmed = summary[:_cfg.KANBAN_PROMPT_SUMMARY_TRUNCATE]
     return (
-        "Leggi il riassunto di questa call e la Kanban di progetto.\n"
-        "Estrai solo nuove attivita' operative concrete o idee implementabili che emergono "
-        "esplicitamente dal riassunto.\n"
-        "Non duplicare card gia' presenti nella Kanban.\n"
-        "Usa solo contenuti presenti nel riassunto. Non inventare nulla.\n"
-        "Rispondi solo con righe Markdown nel formato esatto (una per riga):\n"
-        f"- [ ] Azione concreta #tag #contesto [[{call_wikilink}|{call_label}]]\n"
-        f"Massimo {_cfg.KANBAN_MAX_CARDS_PER_CALL} card. Se non ci sono attivita' utili, rispondi esattamente: NONE\n\n"
+        "Leggi il riassunto di questa call e la Kanban di progetto.\n\n"
+        "Estrai le MACRO-ATTIVITA' da fare che emergono dalla call. "
+        "Una macro-attivita' e' un obiettivo autonomo e consegnabile (es. 'Integrare tabella Z_AUTH in PowerBI'), "
+        "NON un sotto-passo tecnico (es. 'Verificare la colonna X', 'Aprire la connessione Y').\n\n"
+        "Regole TASSATIVE:\n"
+        "- Se piu' sotto-passi portano allo stesso obiettivo, scrivi UNA sola card per quell'obiettivo.\n"
+        "- Non duplicare card gia' presenti nella Kanban.\n"
+        "- Usa solo contenuti presenti nel riassunto. Non inventare nulla.\n"
+        "- Se la call non aggiunge macro-attivita' nuove rispetto alla Kanban, rispondi esattamente: NONE\n\n"
+        "Formato risposta (una riga per card, niente altro):\n"
+        f"- [ ] Macro-attivita' #tag [[{call_wikilink}|{call_label}]]\n\n"
+        f"Massimo {_cfg.KANBAN_MAX_CARDS_PER_CALL} card. Preferisci 1-2 card precise a 4-5 generiche.\n\n"
         "---\n\n"
         f"Riassunto call:\n{trimmed}\n\n"
         "---\n\n"
-        f"Kanban attuale (non duplicare card gia' presenti):\n{kanban_content}"
+        f"Kanban attuale:\n{kanban_content}"
     )
 
 
