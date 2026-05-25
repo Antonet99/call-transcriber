@@ -16,16 +16,22 @@ Set-Alias py .\.venv\Scripts\python.exe
 
 ## Watcher
 
-### Avvio manuale
+### Modalita' 1 — Terminale visibile (display live)
+
+Ferma il task scheduler se attivo, poi avvia il watcher in un terminale.
+Ogni call processata mostrera' il display rich con spinner in quella finestra.
 
 ```powershell
+Stop-ScheduledTask -TaskName 'CallWatcher'
 .\.venv\Scripts\python.exe scripts\watch_calls.py
 ```
 
-### Avvio/stop tramite Task Scheduler (avvio automatico al login)
+### Modalita' 2 — Background automatico (avvio al login)
+
+Il watcher gira in background senza finestra. L'output viene scritto nel log.
 
 ```powershell
-# Registra il task (una tantum)
+# Registra il task (una tantum, o dopo ogni modifica)
 .\scripts\register_startup_task.ps1
 
 # Avvia subito senza fare logout
@@ -39,6 +45,12 @@ Unregister-ScheduledTask -TaskName 'CallWatcher' -Confirm:$false
 
 # Verifica stato
 Get-ScheduledTask -TaskName 'CallWatcher' | Select-Object TaskName, State
+```
+
+### Monitoraggio background in tempo reale
+
+```powershell
+Get-Content -Path ".\logs\watcher.log" -Wait -Tail 30
 ```
 
 ---

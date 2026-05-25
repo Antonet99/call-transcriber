@@ -20,10 +20,11 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
-# Action: python watch_calls.py con output su log
+# Action: cmd /c avvia python e redirige stdout+stderr al log
+$cmdArgs = "/c `"`"$venvPython`" `"$watchScript`" --root-path `"$rootDir`" >> `"$logFile`" 2>&1`""
 $action = New-ScheduledTaskAction `
-    -Execute $venvPython `
-    -Argument "`"$watchScript`" --root-path `"$rootDir`"" `
+    -Execute 'cmd.exe' `
+    -Argument $cmdArgs `
     -WorkingDirectory $rootDir
 
 # Trigger: al login dell'utente corrente
