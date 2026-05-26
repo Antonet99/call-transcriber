@@ -34,7 +34,7 @@ def build_kanban_prompt(summary: str, kanban_content: str, call_wikilink: str, c
     return (
         "Leggi il riassunto di questa call e la Kanban di progetto.\n\n"
         "Estrai le MACRO-ATTIVITA' da fare che emergono dalla call. "
-        "Una macro-attivita' e' un obiettivo autonomo e consegnabile (es. 'Integrare tabella Z_AUTH in PowerBI'), "
+        "Una macro-attivita' e' un obiettivo autonomo e consegnabile (es. 'Integrare tabella in PowerBI'), "
         "NON un sotto-passo tecnico (es. 'Verificare la colonna X', 'Aprire la connessione Y').\n\n"
         "Regole TASSATIVE:\n"
         "- Se piu' sotto-passi portano allo stesso obiettivo, scrivi UNA sola card per quell'obiettivo.\n"

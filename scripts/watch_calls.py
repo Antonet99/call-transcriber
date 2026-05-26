@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import queue
 import sys
 import threading
 from pathlib import Path
@@ -36,21 +37,31 @@ class _CallHandler(FileSystemEventHandler):
         self._root = root
         self._provider = provider
         self._extra = extra_kwargs
-        self._in_progress: set[str] = set()
+        self._queue: queue.Queue[str | None] = queue.Queue()
+        self._known: set[str] = set()
         self._lock = threading.Lock()
+        self._worker = threading.Thread(target=self._run_worker)
+        self._worker.start()
 
     def _should_process(self, path: str) -> bool:
         return Path(path).suffix.lower() in _SUPPORTED_EXT
 
     def _handle(self, path: str) -> None:
         with self._lock:
-            if path in self._in_progress:
+            if path in self._known:
                 return
-            self._in_progress.add(path)
+            self._known.add(path)
+        self._queue.put(path)
 
-        def run() -> None:
+    def _run_worker(self) -> None:
+        from scripts.process_call import process
+
+        while True:
+            path = self._queue.get()
+            if path is None:
+                self._queue.task_done()
+                break
             try:
-                from scripts.process_call import process
                 process(
                     input_path=Path(path),
                     root=self._root,
@@ -61,10 +72,12 @@ class _CallHandler(FileSystemEventHandler):
                 logging.error("Pipeline fallita per %s: %s", path, exc)
             finally:
                 with self._lock:
-                    self._in_progress.discard(path)
+                    self._known.discard(path)
+                self._queue.task_done()
 
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
+    def stop(self) -> None:
+        self._queue.put(None)
+        self._worker.join()
 
     def on_created(self, event: FileCreatedEvent) -> None:
         if not event.is_directory and self._should_process(event.src_path):
@@ -107,6 +120,7 @@ def watch(
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
+    handler.stop()
 
 
 def main() -> None:

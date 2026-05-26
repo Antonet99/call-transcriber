@@ -10,6 +10,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 _UTF8 = "utf-8"
 _SEP = "---"
 
@@ -42,6 +44,15 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
     if not fm_lines:
         return {}, body
+
+    yaml_text = "\n".join(fm_lines[1:-1]).strip()
+    if yaml_text:
+        try:
+            parsed = yaml.safe_load(yaml_text) or {}
+            if isinstance(parsed, dict):
+                return dict(parsed), body
+        except yaml.YAMLError:
+            pass
 
     fields: dict[str, Any] = {}
     i = 1
@@ -88,6 +99,10 @@ def read_fields(path: Path) -> dict[str, Any]:
 def _fmt_value(val: Any) -> str:
     if isinstance(val, list):
         return "[" + ", ".join(str(v) for v in val) + "]"
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    if isinstance(val, date):
+        return val.isoformat()
     s = str(val)
     if "[[" in s or ":" in s or s.startswith('"'):
         if not (s.startswith('"') and s.endswith('"')):

@@ -234,9 +234,10 @@ def _get_call_info(call_dir: Path, task_name: str) -> dict | None:
     }
 
 
-def rebuild(root: Path) -> dict:
-    from scripts.archive_old_calls import archive as _archive
-    _archive(root)
+def rebuild(root: Path, archive_old: bool = False) -> dict:
+    if archive_old:
+        from scripts.archive_old_calls import archive as _archive
+        _archive(root)
 
     completed_root = root / "completate"
     task_root = completed_root / "Task"

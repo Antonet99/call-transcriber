@@ -36,7 +36,7 @@ GEMINI_CAPACITY_ATTEMPTS: int = 2
 CLAUDE_SUMMARY_MODEL: str = "claude-sonnet-4-6"
 CLAUDE_SUMMARY_EFFORT: str = "medium"
 
-CLAUDE_TASK_MODEL: str = "claude-sonnet-4-6"
+CLAUDE_TASK_MODEL: str = "claude-haiku-4-5"
 CLAUDE_TASK_EFFORT: str = "low"
 
 CLAUDE_LIGHT_MODEL: str = "claude-haiku-4-5"

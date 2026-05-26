@@ -12,7 +12,10 @@ import scripts.settings as _cfg
 from scripts.llm.providers.base import LlmProvider
 
 _NOISE_RE = re.compile(r"^Ripgrep is not available\. Falling back to GrepTool\.\s*$", re.I)
-_CAPACITY_RE = re.compile(r"RESOURCE_EXHAUSTED|429", re.I)
+_CAPACITY_RE = re.compile(
+    r"MODEL_CAPACITY_EXHAUSTED|RESOURCE_EXHAUSTED|No capacity available for model|RetryableQuotaError|429",
+    re.I,
+)
 
 
 class GeminiCapacityError(RuntimeError):

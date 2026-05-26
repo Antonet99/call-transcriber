@@ -102,7 +102,7 @@ Registra il watcher come task di Windows (una tantum):
 .\scripts\register_startup_task.ps1
 ```
 
-Da questo momento `watch_calls.py` si avvia automaticamente ad ogni login. Il watcher elabora anche i file gia' presenti in `da_processare/` all'avvio.
+Da questo momento `watch_calls.py` si avvia automaticamente ad ogni login. Lo script rimuove anche il vecchio task PowerShell `Call Automation Watcher`, se presente, per evitare watcher duplicati. Il watcher elabora anche i file gia' presenti in `da_processare/` all'avvio.
 
 Comandi utili:
 
@@ -147,7 +147,7 @@ GEMINI_CAPACITY_ATTEMPTS = 2
 # Modelli e effort Claude CLI
 CLAUDE_SUMMARY_MODEL  = "claude-sonnet-4-6"
 CLAUDE_SUMMARY_EFFORT = "medium"         # low | medium | high | xhigh | max
-CLAUDE_TASK_MODEL     = "claude-sonnet-4-6"
+CLAUDE_TASK_MODEL     = "claude-haiku-4-5"
 CLAUDE_TASK_EFFORT    = "low"
 CLAUDE_LIGHT_MODEL    = "claude-haiku-4-5"
 CLAUDE_LIGHT_EFFORT   = "low"
@@ -164,7 +164,7 @@ ARCHIVE_MAX_MB  = 19.0
 ARCHIVE_DAYS    = 10
 
 # Kanban
-KANBAN_MAX_CARDS_PER_CALL = 5
+KANBAN_MAX_CARDS_PER_CALL = 4
 ```
 
 ## Provider LLM
@@ -234,6 +234,12 @@ Per rigenerare gli indici manualmente:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\rebuild_indexes.py
+```
+
+Per archiviare anche le call vecchie prima di rigenerare gli indici:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\rebuild_indexes.py --archive-old
 ```
 
 ## Aggiornamento manuale Kanban

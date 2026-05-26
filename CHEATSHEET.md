@@ -125,6 +125,12 @@ Get-Content -Path ".\logs\watcher.log" -Wait -Tail 30
 .\.venv\Scripts\python.exe scripts\rebuild_indexes.py
 ```
 
+### Rigenera gli indici e archivia le call vecchie
+
+```powershell
+.\.venv\Scripts\python.exe scripts\rebuild_indexes.py --archive-old
+```
+
 ---
 
 ## Archivio
@@ -184,4 +190,4 @@ Tutti i parametri si trovano in `scripts\settings.py`:
 | `GROQ_WHISPER_MODEL` | `whisper-large-v3-turbo` | Modello trascrizione |
 | `ARCHIVE_MAX_MB` | `19.0` | Soglia compressione audio |
 | `ARCHIVE_DAYS` | `10` | Giorni prima dell'archiviazione |
-| `KANBAN_MAX_CARDS_PER_CALL` | `5` | Max card per call |
+| `KANBAN_MAX_CARDS_PER_CALL` | `4` | Max card per call |

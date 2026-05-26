@@ -4,7 +4,10 @@
 
 param(
     [Parameter(Mandatory = $false)]
-    [string]$TaskName = 'CallWatcher'
+    [string]$TaskName = 'CallWatcher',
+
+    [Parameter(Mandatory = $false)]
+    [string[]]$LegacyTaskNames = @('Call Automation Watcher')
 )
 
 $rootDir = Split-Path -Parent $PSScriptRoot
@@ -20,11 +23,23 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
-# Action: cmd /c avvia python e redirige stdout+stderr al log
-$cmdArgs = "/c `"`"$venvPython`" `"$watchScript`" --root-path `"$rootDir`" >> `"$logFile`" 2>&1`""
+foreach ($legacyTaskName in $LegacyTaskNames) {
+    if ($legacyTaskName -eq $TaskName) {
+        continue
+    }
+
+    $legacyTask = Get-ScheduledTask -TaskName $legacyTaskName -ErrorAction SilentlyContinue
+    if ($legacyTask) {
+        Stop-ScheduledTask -TaskName $legacyTaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $legacyTaskName -Confirm:$false
+        Write-Host "Task legacy rimosso: $legacyTaskName"
+    }
+}
+
+# Action: il watcher scrive gia' su logs/watcher.log tramite logging Python.
 $action = New-ScheduledTaskAction `
-    -Execute 'cmd.exe' `
-    -Argument $cmdArgs `
+    -Execute $venvPython `
+    -Argument "`"$watchScript`" --root-path `"$rootDir`"" `
     -WorkingDirectory $rootDir
 
 # Trigger: al login dell'utente corrente

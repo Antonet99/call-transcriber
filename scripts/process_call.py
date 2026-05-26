@@ -429,6 +429,12 @@ def process(
     elif not is_video:
         resolved.unlink(missing_ok=True)
 
+    with _con.status("  Archiviazione call vecchie..."):
+        from scripts.archive_old_calls import archive as archive_old_calls
+        archive_result = archive_old_calls(root)
+    if archive_result["archived"]:
+        _ok(f"Call archiviate: {archive_result['archived']}")
+
     with _con.status("  Rigenerazione indici Obsidian..."):
         obs_indexes.rebuild(root)
     _ok("Indici aggiornati")
