@@ -6,10 +6,11 @@ classifica, comprime, pulisce e rigenera gli indici.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -38,7 +39,7 @@ _UTF8 = "utf-8"
 _AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".webm", ".wma"}
 _VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
 
-ProviderName = Literal["gemini", "claude", "codex"]
+ProviderName = Literal["copilot"]
 
 
 # ---------------------------------------------------------------------------
@@ -50,15 +51,9 @@ def _load_provider(name: ProviderName) -> LlmProvider:
         raise RuntimeError(
             f"Provider '{name}' disabilitato. Abilitarlo in scripts/settings.py per usarlo."
         )
-    if name == "gemini":
-        from scripts.llm.providers.gemini import GeminiProvider
-        p = GeminiProvider()
-    elif name == "claude":
-        from scripts.llm.providers.claude import ClaudeProvider
-        p = ClaudeProvider()
-    elif name == "codex":
-        from scripts.llm.providers.codex import CodexProvider
-        p = CodexProvider()
+    if name == "copilot":
+        from scripts.llm.providers.copilot import CopilotProvider
+        p = CopilotProvider()
     else:
         raise ValueError(f"Provider sconosciuto: {name}")
 
@@ -90,6 +85,52 @@ def _unique_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         idx += 1
+
+
+def _archive_processed_source(source_path: Path, root: Path, timestamp: datetime, keep_source: bool) -> Path | None:
+    if not source_path.exists():
+        return None
+
+    archive_dir = root / "completate" / "archivio"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archived_name = f"{timestamp.strftime('%Y-%m-%d %H.%M')} - {_safe_name(source_path.name)}"
+    target = _unique_path(archive_dir / archived_name)
+
+    if keep_source:
+        shutil.copy2(source_path, target)
+    else:
+        shutil.move(str(source_path), str(target))
+    os.utime(target, None)
+    return target
+
+
+def _cleanup_source_archive(root: Path, days: int | None = None) -> int:
+    if days is None:
+        days = _cfg.SOURCE_ARCHIVE_DAYS
+    if days <= 0:
+        return 0
+
+    archive_dir = root / "completate" / "archivio"
+    if not archive_dir.exists():
+        return 0
+
+    cutoff = datetime.now() - timedelta(days=days)
+    deleted = 0
+    for item in archive_dir.iterdir():
+        if not item.is_file():
+            continue
+        if datetime.fromtimestamp(item.stat().st_mtime) >= cutoff:
+            continue
+        item.unlink()
+        deleted += 1
+    return deleted
+
+
+def _read_cached_transcript(transcript_path: Path) -> str:
+    if not transcript_path.exists():
+        return ""
+    transcript = transcript_path.read_text(encoding=_UTF8).strip()
+    return transcript
 
 
 def wait_stable(path: Path, stable_checks: int = 3, delay_seconds: int = 3) -> None:
@@ -219,7 +260,7 @@ def _get_task_dir(
 
 
 # ---------------------------------------------------------------------------
-# Summary generation with fallback
+# Summary generation
 # ---------------------------------------------------------------------------
 
 def _invoke_summary(
@@ -231,62 +272,45 @@ def _invoke_summary(
 ) -> None:
     transcript = transcript_path.read_text(encoding=_UTF8)
     prompt = llm_common.build_summary_prompt(prompt_path, transcript)
-    raw = provider.invoke_summary(prompt, model or provider.default_summary_model())
-    if not raw:
-        raise RuntimeError("Il provider non ha restituito un riassunto.")
-    clean = llm_common.clean_markdown(raw)
-    if not clean:
-        raise RuntimeError("Il provider non ha restituito Markdown valido.")
-    llm_common.validate_summary(clean)
-    output_path.write_text(clean, encoding=_UTF8)
+    attempts = max(1, _cfg.COPILOT_SUMMARY_RETRIES + 1)
+    retry_note = ""
+    last_error: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        current_prompt = prompt if not retry_note else f"{prompt}\n\n---\n\n{retry_note}"
+        raw = provider.invoke_summary(current_prompt, model or provider.default_summary_model())
+        try:
+            if not raw:
+                raise RuntimeError("Il provider non ha restituito un riassunto.")
+            clean = llm_common.clean_markdown(raw)
+            if not clean:
+                raise RuntimeError("Il provider non ha restituito Markdown valido.")
+            llm_common.validate_summary(clean)
+            output_path.write_text(clean, encoding=_UTF8)
+            return
+        except Exception as exc:
+            last_error = exc
+            retry_note = (
+                "La risposta precedente non rispetta il formato richiesto.\n"
+                f"Errore di validazione: {exc}\n\n"
+                "Rigenera il riassunto completo rispettando esattamente il formato richiesto. "
+                "Restituisci solo Markdown valido, senza spiegazioni o blocchi di codice.\n\n"
+                f"Risposta precedente:\n{raw or ''}"
+            )
+
+    raise last_error or RuntimeError("Generazione riassunto fallita.")
 
 
-def _summarize_with_fallback(
-    root: Path,
+def _summarize(
     transcript_path: Path,
     output_path: Path,
     prompt_path: Path,
     provider_name: ProviderName,
     model: str,
-    gemini_attempts: int,
-    gemini_fallback_model: str,
 ) -> tuple[ProviderName, LlmProvider]:
-    from scripts.llm.providers.gemini import GeminiCapacityError
-
     provider = _load_provider(provider_name)
-
-    if provider_name != "gemini":
-        _invoke_summary(provider, transcript_path, output_path, prompt_path, model)
-        return provider_name, provider
-
-    last_error: Exception | None = None
-    for attempt in range(1, gemini_attempts + 1):
-        try:
-            _invoke_summary(provider, transcript_path, output_path, prompt_path, model)
-            return "gemini", provider
-        except GeminiCapacityError as exc:
-            last_error = exc
-            print(f"[warn] Gemini capacity exhausted, tentativo {attempt}/{gemini_attempts}.")
-
-    if gemini_fallback_model:
-        try:
-            print(f"[warn] Fallback Gemini: provo {gemini_fallback_model}.")
-            _invoke_summary(provider, transcript_path, output_path, prompt_path, gemini_fallback_model)
-            return "gemini", provider
-        except Exception:
-            print(f"[warn] Fallback Gemini {gemini_fallback_model} fallito.")
-
-    if "claude" not in _cfg.ENABLED_PROVIDERS:
-        raise last_error or RuntimeError(
-            "Tutti i tentativi Gemini hanno fallito e Claude è disabilitato in settings.py."
-        )
-
-    print("[warn] Fallback su Claude.")
-    claude_provider = _load_provider("claude")
-    _invoke_summary(claude_provider, transcript_path, output_path, prompt_path, claude_provider.default_summary_model())
-    if not output_path.exists():
-        raise last_error or RuntimeError("Summary generation fallita.")
-    return "claude", claude_provider
+    _invoke_summary(provider, transcript_path, output_path, prompt_path, model)
+    return provider_name, provider
 
 
 # ---------------------------------------------------------------------------
@@ -301,17 +325,11 @@ def process(
     provider_name: ProviderName | None = None,
     summary_model: str = "",
     task_model: str = "",
-    gemini_capacity_attempts: int | None = None,
-    gemini_fallback_model: str | None = None,
 ) -> dict:
     if archive_max_mb is None:
         archive_max_mb = _cfg.ARCHIVE_MAX_MB
     if provider_name is None:
-        provider_name = _cfg.ENABLED_PROVIDERS[0] if _cfg.ENABLED_PROVIDERS else "gemini"
-    if gemini_capacity_attempts is None:
-        gemini_capacity_attempts = _cfg.GEMINI_CAPACITY_ATTEMPTS
-    if gemini_fallback_model is None:
-        gemini_fallback_model = _cfg.GEMINI_FALLBACK_MODEL
+        provider_name = _cfg.ENABLED_PROVIDERS[0] if _cfg.ENABLED_PROVIDERS else "copilot"
     if root is None:
         root = Path(__file__).parent.parent
 
@@ -357,28 +375,26 @@ def process(
     summary_path = call_dir / "riassunto.md"
     prompt_path = Path(__file__).parent / "prompt_riassunto_call.md"
 
-    from scripts.transcribe_with_groq import transcribe
     t = time.perf_counter()
-    with _con.status(f"  Trascrizione Whisper ({_cfg.GROQ_WHISPER_MODEL})..."):
-        transcript_text = transcribe(audio_path, transcript_path)
-    _ok(f"Trascrizione completata ({len(transcript_text)} caratteri)", time.perf_counter() - t)
+    transcript_text = _read_cached_transcript(transcript_path)
+    if transcript_text:
+        _ok(f"Trascrizione già presente ({len(transcript_text)} caratteri)")
+    else:
+        from scripts.transcribe_with_groq import transcribe
+        with _con.status(f"  Trascrizione Whisper ({_cfg.GROQ_WHISPER_MODEL})..."):
+            transcript_text = transcribe(audio_path, transcript_path)
+        _ok(f"Trascrizione completata ({len(transcript_text)} caratteri)", time.perf_counter() - t)
 
     t = time.perf_counter()
     with _con.status(f"  Generazione riassunto ({provider_name})..."):
-        active_provider_name, active_provider = _summarize_with_fallback(
-            root=root,
+        active_provider_name, active_provider = _summarize(
             transcript_path=transcript_path,
             output_path=summary_path,
             prompt_path=prompt_path,
             provider_name=provider_name,
             model=summary_model,
-            gemini_attempts=gemini_capacity_attempts,
-            gemini_fallback_model=gemini_fallback_model,
         )
-    if active_provider_name != provider_name:
-        _ok(f"Riassunto generato (fallback su {active_provider_name})", time.perf_counter() - t)
-    else:
-        _ok(f"Riassunto generato", time.perf_counter() - t)
+    _ok("Riassunto generato", time.perf_counter() - t)
 
     context_title = _extract_title_from_summary(summary_path)
     if not context_title:
@@ -402,6 +418,7 @@ def process(
     call_dir = final_call_dir
     audio_path = call_dir / "audio.m4a"
     archive_audio_path = call_dir / "audio_compresso.m4a"
+    transcript_path = call_dir / "trascrizione.txt"
     summary_path = call_dir / "riassunto.md"
 
     _set_summary_frontmatter(summary_path, timestamp, task_name)
@@ -416,7 +433,7 @@ def process(
     compressed_mb = archive_audio_path.stat().st_size / 1_000_000
     _ok(f"Audio compresso: {compressed_mb:.1f} MB", time.perf_counter() - t)
 
-    keep_names = {archive_audio_path.name, summary_path.name}
+    keep_names = {archive_audio_path.name, summary_path.name, transcript_path.name}
     for item in list(call_dir.iterdir()):
         if item.name not in keep_names:
             if item.is_dir():
@@ -424,10 +441,18 @@ def process(
             else:
                 item.unlink()
 
-    if is_video and not keep_video:
-        resolved.unlink(missing_ok=True)
-    elif not is_video:
-        resolved.unlink(missing_ok=True)
+    source_archive_path = _archive_processed_source(
+        resolved,
+        root,
+        timestamp,
+        keep_source=(is_video and keep_video),
+    )
+    if source_archive_path:
+        _ok(f"Sorgente archiviato: {source_archive_path.name}")
+
+    deleted_sources = _cleanup_source_archive(root)
+    if deleted_sources:
+        _ok(f"Sorgenti archiviati rimossi: {deleted_sources}")
 
     with _con.status("  Archiviazione call vecchie..."):
         from scripts.archive_old_calls import archive as archive_old_calls
@@ -457,7 +482,9 @@ def process(
         "call_directory": str(call_dir),
         "task_directory": str(task_dir),
         "audio": str(archive_audio_path),
+        "transcript": str(transcript_path),
         "summary": str(summary_path),
+        "source_archive": str(source_archive_path) if source_archive_path else "",
         "provider": active_provider_name,
     }
 
@@ -468,11 +495,9 @@ def main() -> None:
     parser.add_argument("--root-path", type=Path, default=None)
     parser.add_argument("--keep-video", action="store_true")
     parser.add_argument("--archive-max-mb", type=float, default=19.0)
-    parser.add_argument("--provider", default="gemini", choices=["gemini", "claude", "codex"])
+    parser.add_argument("--provider", default="copilot", choices=["copilot"])
     parser.add_argument("--summary-model", default="")
     parser.add_argument("--task-model", default="")
-    parser.add_argument("--gemini-capacity-attempts", type=int, default=2)
-    parser.add_argument("--gemini-fallback-model", default="gemini-3-pro-preview")
     args = parser.parse_args()
 
     result = process(
@@ -483,8 +508,6 @@ def main() -> None:
         provider_name=args.provider,
         summary_model=args.summary_model,
         task_model=args.task_model,
-        gemini_capacity_attempts=args.gemini_capacity_attempts,
-        gemini_fallback_model=args.gemini_fallback_model,
     )
     for k, v in result.items():
         print(f"{k}: {v}")

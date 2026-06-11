@@ -7,44 +7,30 @@ from dotenv import load_dotenv as _load_dotenv
 
 _load_dotenv(_Path(__file__).parent.parent / ".env")
 
-# Provider abilitati, in ordine di preferenza (il primo è il principale, gli altri sono fallback).
-# Valori disponibili: "gemini", "claude"
+# Provider abilitati.
+# Valori disponibili: "copilot"
 ENABLED_PROVIDERS: list[str] = [
-    "gemini",
-    "claude",
+    "copilot",
 ]
 
 # Il tuo nome completo: viene escluso dai partecipanti nel titolo delle call
 MY_NAME: str = "Antonio Baio"
 
 # ---------------------------------------------------------------------------
-# Gemini CLI
+# GitHub Copilot SDK
 # ---------------------------------------------------------------------------
-GEMINI_SUMMARY_MODEL: str = "gemini-3.1-pro-preview"
-GEMINI_TASK_MODEL: str = "gemini-3-flash-preview"
-GEMINI_LIGHT_MODEL: str = "gemini-3-flash-preview"
+COPILOT_SUMMARY_MODEL: str = "gemini-3.1-pro-preview"
+COPILOT_SUMMARY_FALLBACK_MODEL: str = "gpt-5.4-mini"
+COPILOT_TASK_MODEL: str = "gpt-5.4-mini"
+COPILOT_LIGHT_MODEL: str = "gpt-5.4-mini"
+COPILOT_AUDIT_MODEL: str = "gpt-5.4-mini"
 
-# Modello di fallback se il principale esaurisce la quota
-GEMINI_FALLBACK_MODEL: str = "gemini-3-flash-preview"
+COPILOT_REASONING_EFFORT: str = "medium"
+COPILOT_LIGHT_REASONING_EFFORT: str = "medium"
 
-# Tentativi con il modello principale prima di passare al fallback
-GEMINI_CAPACITY_ATTEMPTS: int = 2
-
-# ---------------------------------------------------------------------------
-# Claude CLI  (effort: low | medium | high | xhigh | max)
-# ---------------------------------------------------------------------------
-CLAUDE_SUMMARY_MODEL: str = "claude-sonnet-4-6"
-CLAUDE_SUMMARY_EFFORT: str = "medium"
-
-CLAUDE_TASK_MODEL: str = "claude-haiku-4-5"
-CLAUDE_TASK_EFFORT: str = "low"
-
-CLAUDE_LIGHT_MODEL: str = "claude-haiku-4-5"
-CLAUDE_LIGHT_EFFORT: str = "low"
-
-# Subagent usati come revisori interni durante la generazione del riassunto
-CLAUDE_SUBAGENT_MODEL: str = "claude-haiku-4-5"
-CLAUDE_SUBAGENT_EFFORT: str = "high"
+COPILOT_SUMMARY_RETRIES: int = 2
+COPILOT_SUMMARY_TIMEOUT_SECONDS: int = 900
+COPILOT_LIGHT_TIMEOUT_SECONDS: int = 300
 
 # ---------------------------------------------------------------------------
 # Groq / Trascrizione
@@ -58,6 +44,7 @@ TRANSCRIPTION_CHUNK_TARGET_MB: float = 18.0
 # ---------------------------------------------------------------------------
 ARCHIVE_MAX_MB: float = 19.0
 ARCHIVE_DAYS: int = 10
+SOURCE_ARCHIVE_DAYS: int = 15
 
 # ---------------------------------------------------------------------------
 # LLM prompts

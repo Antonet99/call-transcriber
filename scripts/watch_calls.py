@@ -90,7 +90,7 @@ class _CallHandler(FileSystemEventHandler):
 
 def watch(
     root: Path | None = None,
-    provider: str = "gemini",
+    provider: str = "copilot",
     **kwargs,
 ) -> None:
     if root is None:
@@ -126,7 +126,7 @@ def watch(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Watcher cartella da_processare/.")
     parser.add_argument("--root-path", type=Path, default=None)
-    parser.add_argument("--provider", default="gemini", choices=["gemini", "claude", "codex"])
+    parser.add_argument("--provider", default="copilot", choices=["copilot"])
     parser.add_argument("--archive-max-mb", type=float, default=19.0)
     parser.add_argument("--keep-video", action="store_true")
     args = parser.parse_args()

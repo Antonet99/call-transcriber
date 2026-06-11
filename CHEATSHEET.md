@@ -62,15 +62,15 @@ Get-Content -Path ".\logs\watcher.log" -Wait -Tail 30
 .\.venv\Scripts\python.exe scripts\process_call.py `
   --input-path ".\da_processare\registrazione.m4a"
 
-# Mantieni il video originale dopo la lavorazione
+# Mantieni il video anche nel path originale dopo la lavorazione
 .\.venv\Scripts\python.exe scripts\process_call.py `
   --input-path ".\da_processare\riunione.mp4" `
   --keep-video
 
-# Forza un provider specifico
+# Forza il provider
 .\.venv\Scripts\python.exe scripts\process_call.py `
   --input-path ".\da_processare\registrazione.m4a" `
-  --provider claude
+  --provider copilot
 
 # Soglia audio personalizzata
 .\.venv\Scripts\python.exe scripts\process_call.py `
@@ -106,13 +106,13 @@ Get-Content -Path ".\logs\watcher.log" -Wait -Tail 30
   --task-directory ".\completate\Task\Italgas - MCP Server"
 ```
 
-### Forza un provider specifico
+### Forza il provider
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\update_project_kanban.py `
   --all `
   --task-directory ".\completate\Task\Italgas - MCP Server" `
-  --provider claude
+  --provider copilot
 ```
 
 ---
@@ -135,6 +135,9 @@ Get-Content -Path ".\logs\watcher.log" -Wait -Tail 30
 
 ## Archivio
 
+I file audio/video originali processati vengono salvati in `completate\archivio`.
+La pulizia automatica rimuove i sorgenti piu' vecchi di `SOURCE_ARCHIVE_DAYS`.
+
 ### Archivia manualmente le call vecchie (usa ARCHIVE_DAYS da settings.py)
 
 ```powershell
@@ -150,6 +153,9 @@ Get-Content -Path ".\logs\watcher.log" -Wait -Tail 30
 ---
 
 ## Trascrizione standalone
+
+Durante la pipeline completa, `trascrizione.txt` viene salvata nella cartella della call.
+Se un retry trova gia' una trascrizione non vuota, salta la chiamata Groq Whisper.
 
 ```powershell
 # Trascrivi un file audio senza processare tutta la pipeline
@@ -179,15 +185,16 @@ Tutti i parametri si trovano in `scripts\settings.py`:
 
 | Parametro | Default | Descrizione |
 |---|---|---|
-| `ENABLED_PROVIDERS` | `["gemini", "claude"]` | Provider attivi e ordine di fallback |
-| `GEMINI_SUMMARY_MODEL` | `gemini-3.1-pro-preview` | Modello riassunto Gemini |
-| `GEMINI_TASK_MODEL` | `gemini-3-flash-preview` | Modello classificazione task |
-| `GEMINI_FALLBACK_MODEL` | `gemini-3-flash-preview` | Fallback se quota esaurita |
-| `GEMINI_CAPACITY_ATTEMPTS` | `2` | Tentativi prima del fallback |
-| `CLAUDE_SUMMARY_MODEL` | `claude-sonnet-4-6` | Modello riassunto Claude |
-| `CLAUDE_SUMMARY_EFFORT` | `medium` | Effort riassunto Claude |
-| `CLAUDE_SUBAGENT_MODEL` | `claude-haiku-4-5` | Modello subagent revisori |
+| `ENABLED_PROVIDERS` | `["copilot"]` | Provider attivo |
+| `COPILOT_SUMMARY_MODEL` | `gemini-3.1-pro-preview` | Modello riassunto principale |
+| `COPILOT_SUMMARY_FALLBACK_MODEL` | `gpt-5.4-mini` | Fallback riassunto se il principale fallisce |
+| `COPILOT_TASK_MODEL` | `gpt-5.4-mini` | Modello classificazione task |
+| `COPILOT_LIGHT_MODEL` | `gpt-5.4-mini` | Modello Kanban |
+| `COPILOT_AUDIT_MODEL` | `gpt-5.4-mini` | Modello audit riassunto |
+| `COPILOT_REASONING_EFFORT` | `medium` | Effort predefinito |
+| `COPILOT_SUMMARY_RETRIES` | `2` | Retry se il Markdown non valida |
 | `GROQ_WHISPER_MODEL` | `whisper-large-v3-turbo` | Modello trascrizione |
 | `ARCHIVE_MAX_MB` | `19.0` | Soglia compressione audio |
 | `ARCHIVE_DAYS` | `10` | Giorni prima dell'archiviazione |
+| `SOURCE_ARCHIVE_DAYS` | `15` | Giorni prima di eliminare i sorgenti audio/video archiviati |
 | `KANBAN_MAX_CARDS_PER_CALL` | `4` | Max card per call |

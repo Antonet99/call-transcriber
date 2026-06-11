@@ -9,17 +9,19 @@ Il progetto prende file audio o video, estrae l'audio, lo trascrive con Groq Whi
 - Watch automatico della cartella `da_processare/` (avviato automaticamente al login via Task Scheduler).
 - Supporto a file audio e video comuni (`.m4a`, `.mp3`, `.wav`, `.mp4`, `.mkv`, `.mov`, ecc.).
 - Trascrizione con Groq Whisper (`whisper-large-v3-turbo`).
+- Riuso automatico di `trascrizione.txt` se una lavorazione precedente e' fallita dopo Whisper.
 - Riassunti Markdown dettagliati, non generici, con:
   - frontmatter YAML per Obsidian;
   - titolo breve con nomi dei partecipanti;
   - sezioni granulari;
   - action item in tabella;
   - decisioni, dubbi, dipendenze e citazioni rilevanti.
-- Provider LLM modulari via CLI (nessuna API key LLM necessaria):
-  - Gemini come provider principale;
-  - Claude come provider di fallback.
+- Provider LLM modulare via GitHub Copilot SDK:
+  - modello summary principale `gemini-3.1-pro-preview`;
+  - fallback summary, audit, classificazione task e Kanban `gpt-5.4-mini`.
 - Classificazione automatica della call dentro una cartella task.
 - Archiviazione automatica delle call piu' vecchie di N giorni.
+- Archiviazione dei file audio/video originali in `completate/archivio`, con pulizia automatica dopo N giorni.
 - Aggiornamento automatico della Kanban di progetto con card estratte dal riassunto.
 - Compressione dell'audio archiviato sotto una soglia configurabile.
 - Indici Obsidian auto-generati:
@@ -33,6 +35,7 @@ Call/
   da_processare/           ← copia qui i file da processare
   completate/
     README.md              ← indice globale auto-generato
+    archivio/              ← sorgenti audio/video originali processati
     Task/
       <nome task>/
         README.md          ← indice task auto-generato
@@ -58,8 +61,7 @@ Call/
       common.py
       providers/
         base.py
-        gemini.py
-        claude.py
+        copilot.py
   .env                     ← chiavi API (non tracciato)
   pyproject.toml
 ```
@@ -68,15 +70,12 @@ Call/
 
 - Python 3.11+
 - `ffmpeg` e `ffprobe` nel PATH
-- Gemini CLI (`gemini`) autenticato
-- Claude CLI (`claude`) autenticato
-- `ripgrep` (`rg`) nel PATH (consigliato per performance Gemini CLI)
+- GitHub Copilot SDK autenticato tramite ambiente GitHub/Copilot
 
 Installazione con `winget`:
 
 ```powershell
 winget install Gyan.FFmpeg
-winget install BurntSushi.ripgrep.MSVC
 ```
 
 ## Installazione
@@ -90,9 +89,11 @@ Crea il file `.env` nella root del progetto:
 
 ```
 GROQ_API_KEY=<la-tua-chiave-groq>
+# opzionale, se l'SDK non trova gia' un'autenticazione GitHub/Copilot
+COPILOT_GITHUB_TOKEN=<token-github>
 ```
 
-Gemini e Claude vengono invocati tramite CLI; non serve nessuna API key aggiuntiva.
+Il provider LLM usa `github-copilot-sdk`. Il pacchetto espone il modulo Python `copilot`.
 
 ## Avvio automatico al login
 
@@ -130,29 +131,24 @@ Mantenere il video originale dopo la lavorazione:
 .\.venv\Scripts\python.exe scripts\process_call.py --input-path .\da_processare\call.mp4 --keep-video
 ```
 
+Senza `--keep-video`, il file sorgente viene spostato in `completate/archivio`. Con `--keep-video`, il video resta anche nel path originale e viene comunque copiato nell'archivio sorgenti.
+
 ## Configurazione
 
 Tutti i parametri sono in `scripts/settings.py`:
 
 ```python
-# Provider abilitati (ordine = priorita' / fallback)
-ENABLED_PROVIDERS = ["gemini", "claude"]
+# Provider abilitati
+ENABLED_PROVIDERS = ["copilot"]
 
-# Modelli Gemini CLI
-GEMINI_SUMMARY_MODEL  = "gemini-3.1-pro-preview"
-GEMINI_TASK_MODEL     = "gemini-3-flash-preview"
-GEMINI_FALLBACK_MODEL = "gemini-3-flash-preview"
-GEMINI_CAPACITY_ATTEMPTS = 2
-
-# Modelli e effort Claude CLI
-CLAUDE_SUMMARY_MODEL  = "claude-sonnet-4-6"
-CLAUDE_SUMMARY_EFFORT = "medium"         # low | medium | high | xhigh | max
-CLAUDE_TASK_MODEL     = "claude-haiku-4-5"
-CLAUDE_TASK_EFFORT    = "low"
-CLAUDE_LIGHT_MODEL    = "claude-haiku-4-5"
-CLAUDE_LIGHT_EFFORT   = "low"
-CLAUDE_SUBAGENT_MODEL = "claude-haiku-4-5"
-CLAUDE_SUBAGENT_EFFORT = "high"
+# GitHub Copilot SDK
+COPILOT_SUMMARY_MODEL = "gemini-3.1-pro-preview"
+COPILOT_SUMMARY_FALLBACK_MODEL = "gpt-5.4-mini"
+COPILOT_TASK_MODEL    = "gpt-5.4-mini"
+COPILOT_LIGHT_MODEL   = "gpt-5.4-mini"
+COPILOT_AUDIT_MODEL   = "gpt-5.4-mini"
+COPILOT_REASONING_EFFORT = "medium"
+COPILOT_SUMMARY_RETRIES = 2
 
 # Groq / Trascrizione
 GROQ_WHISPER_MODEL        = "whisper-large-v3-turbo"
@@ -162,6 +158,7 @@ TRANSCRIPTION_CHUNK_TARGET_MB = 18.0
 # Pipeline
 ARCHIVE_MAX_MB  = 19.0
 ARCHIVE_DAYS    = 10
+SOURCE_ARCHIVE_DAYS = 15
 
 # Kanban
 KANBAN_MAX_CARDS_PER_CALL = 4
@@ -169,18 +166,15 @@ KANBAN_MAX_CARDS_PER_CALL = 4
 
 ## Provider LLM
 
-Gemini e' il provider predefinito. Il flusso di fallback e' il seguente:
+`copilot` e' il provider predefinito e usa GitHub Copilot SDK in Python.
 
-1. `GEMINI_CAPACITY_ATTEMPTS` tentativi con `GEMINI_SUMMARY_MODEL`
-2. 1 tentativo con `GEMINI_FALLBACK_MODEL`
-3. Fallback a Claude (`CLAUDE_SUMMARY_MODEL` con effort `CLAUDE_SUMMARY_EFFORT`)
+Il flusso qualitativo del riassunto resta composto da piu' passaggi:
 
-Il provider Gemini usa i subagent locali `.gemini/agents/` se presenti.
-
-Il provider Claude passa al volo due subagent per la revisione del riassunto:
-
-- `call-metadata-auditor` (`claude-haiku-4-5`, effort `high`): controlla persone, sistemi, tag e frontmatter.
-- `call-action-auditor` (`claude-haiku-4-5`, effort `high`): controlla decisioni, action item, dipendenze e citazioni.
+1. draft del riassunto con `COPILOT_SUMMARY_MODEL`, con fallback a `COPILOT_SUMMARY_FALLBACK_MODEL` se la chiamata fallisce;
+2. audit metadati, persone, sistemi, tag e frontmatter con `COPILOT_AUDIT_MODEL`;
+3. audit decisioni, action item, dipendenze, domande aperte e citazioni con `COPILOT_AUDIT_MODEL`;
+4. revisione finale del Markdown se gli audit segnalano correzioni;
+5. validazione locale del formato e retry se il Markdown non e' valido.
 
 ## Output
 
@@ -189,6 +183,7 @@ Ogni call elaborata produce:
 ```text
 completate/Task/<task>/<YYYY-MM-DD HH.mm - Titolo>/
   <Titolo>.md            ← riassunto Markdown
+  trascrizione.txt        ← trascrizione completa riusabile in caso di retry
   audio_compresso.m4a    ← audio compresso sotto ARCHIVE_MAX_MB
 ```
 
@@ -200,7 +195,7 @@ data: 2026-05-13
 ora: "11:37"
 task: "[[Italgas - MCP Server]]"
 persone: [Daniela, Marco]
-sistemi: [Databricks, Gemini CLI]
+sistemi: [Databricks, GitHub Copilot SDK]
 tags: [call, italgas, mcp-server]
 ---
 ```
@@ -211,15 +206,17 @@ tags: [call, italgas, mcp-server]
 2. Il watcher rileva il file.
 3. Attesa finche' dimensione e timestamp sono stabili.
 4. `ffmpeg` estrae o converte l'audio in `audio.m4a`.
-5. Groq Whisper produce `trascrizione.txt` (con chunking automatico per file grandi).
-6. Gemini CLI genera il riassunto Markdown (con fallback automatico a Claude).
+5. Se `trascrizione.txt` esiste gia' nella cartella della call, viene riusata; altrimenti Groq Whisper la produce con chunking automatico per file grandi.
+6. GitHub Copilot SDK genera il riassunto Markdown e lo sottopone agli audit.
 7. Titolo e frontmatter vengono normalizzati.
-8. Gemini CLI classifica la call rispetto alle task esistenti.
+8. GitHub Copilot SDK classifica la call rispetto alle task esistenti.
 9. La cartella viene spostata sotto `completate/Task/<task>/`.
 10. L'audio viene compresso in `audio_compresso.m4a`.
-11. I file intermedi vengono rimossi; il file sorgente viene cancellato.
-12. Gli indici Obsidian vengono rigenerati.
-13. La Kanban del task viene aggiornata con le nuove card.
+11. I file intermedi vengono rimossi, mantenendo riassunto, trascrizione e audio compresso.
+12. Il file sorgente audio/video viene spostato in `completate/archivio`.
+13. I sorgenti archiviati piu' vecchi di `SOURCE_ARCHIVE_DAYS` vengono eliminati.
+14. Gli indici Obsidian vengono rigenerati.
+15. La Kanban del task viene aggiornata con le nuove card.
 
 ## Knowledge base Obsidian
 
@@ -269,9 +266,7 @@ Registrazioni, audio compressi, trascrizioni, riassunti, log, vault generati e `
 
 **`ffmpeg` non trovato**: `winget install Gyan.FFmpeg` e riavvia il terminale.
 
-**`gemini` o `claude` non trovati**: verifica che le CLI siano installate e nel PATH.
-
-**Ripgrep non trovato**: Gemini CLI stampa `Ripgrep is not available. Falling back to GrepTool.` se `rg` non e' nel PATH. `winget install BurntSushi.ripgrep.MSVC`.
+**Provider Copilot non disponibile**: verifica che `github-copilot-sdk` sia installato nella venv e che l'autenticazione GitHub/Copilot sia disponibile.
 
 **La call finisce nella root di `completate/Task/`**: il provider LLM non ha riconosciuto nessuna task. Verifica che le cartelle task abbiano nomi descrittivi.
 

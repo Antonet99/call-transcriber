@@ -2,7 +2,7 @@
 
 ## Obiettivo
 
-Non limitarti a "riassumere": ricostruisci fedelmente quanto detto nella call, in forma chiara, ordinata e navigabile.
+Non limitarti a "riassumere": ricostruisci fedelmente quanto detto nella call, in forma chiara, ordinata, leggibile e navigabile.
 
 Il risultato deve permettere a chi non ha ascoltato la call di capire:
 
@@ -11,6 +11,7 @@ Il risultato deve permettere a chi non ha ascoltato la call di capire:
 - quali decisioni sono state prese;
 - quali action item, dipendenze, blocchi o dubbi restano aperti;
 - quali frasi sono importanti da rileggere quasi testualmente.
+- qual e' il contesto operativo in cui la conversazione ha senso, senza costringere il lettore a dedurlo da frammenti sparsi.
 
 ## Regole generali
 
@@ -20,6 +21,8 @@ Il risultato deve permettere a chi non ha ascoltato la call di capire:
 - Non racchiudere il risultato in blocchi di codice come ```md o ```.
 - Non inventare dettagli non presenti nella trascrizione.
 - Non trasformare dettagli specifici in frasi generiche.
+- Non limitarti a elencare frammenti: collega le informazioni tra loro e spiega perche' sono rilevanti quando emerge dalla conversazione.
+- Scrivi paragrafi leggibili, con frasi complete e passaggi logici. Usa bullet o tabelle solo quando aiutano davvero.
 - Conservare nomi propri, sistemi, numeri, date, ticket, issue, repository, acronimi e terminologia tecnica esattamente come compaiono nella trascrizione.
 - Se un passaggio e' ambiguo, incompleto o poco comprensibile, segnalalo come tale invece di interpretarlo.
 - Generare un titolo di contesto brevissimo, massimo 5 o 6 parole, specifico e comprensibile.
@@ -41,7 +44,7 @@ data:
 ora:
 task:
 persone: [Daniela, Marco]
-sistemi: [Databricks, Claude Code]
+sistemi: [Databricks, GitHub Copilot SDK]
 tags: [call, italgas, mcp-server, autenticazione]
 ---
 
@@ -58,11 +61,18 @@ Non ripetere `# riassunto` o il sottotitolo in altre parti del file.
 
 ## Contenuto
 
-Organizza il contenuto per argomenti reali emersi nella call. Per ogni topic:
+Il primo blocco dopo il titolo deve aiutare il lettore a orientarsi. Se il contesto emerge dalla trascrizione, apri con una sezione `### Contesto` o equivalente che spieghi in 1-3 paragrafi:
 
-- riportare cosa e' stato detto in modo asciutto ma specifico;
+- di quale progetto, sistema, cliente, problema o decisione si sta parlando;
+- perche' la call e' stata fatta;
+- quali sono i punti principali che tengono insieme i dettagli successivi.
+
+Poi organizza il resto per argomenti reali emersi nella call. Per ogni topic:
+
+- riportare cosa e' stato detto in modo specifico, ma leggibile anche da chi non ha ascoltato la call;
 - mantenere esempi, numeri, nomi e vincoli quando presenti;
 - distinguere decisioni, ipotesi, dubbi e prossimi passi;
+- spiegare i collegamenti tra decisioni, problemi, sistemi e action item quando sono deducibili dalla conversazione;
 - evitare formule vaghe come "si e' discusso di..." senza dettaglio operativo.
 
 Usa sezioni `###` granulari, ad esempio:
@@ -101,5 +111,7 @@ Non abusarne: poche citazioni mirate valgono piu' di molte frasi generiche.
 ## Criteri di qualita'
 
 - Il riassunto deve essere fedele prima che elegante.
+- Deve essere abbastanza verboso da risultare comprensibile anche letto settimane dopo, senza ascoltare la registrazione.
+- Deve avere un filo logico: contesto, temi discussi, decisioni, conseguenze operative e prossimi passi devono essere collegati.
 - Deve preservare il livello di dettaglio utile per ritrovare decisioni, numeri, nomi e passaggi tecnici.
 - Deve essere leggibile in Obsidian grazie a frontmatter, sezioni granulari e tag.

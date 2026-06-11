@@ -20,12 +20,9 @@ def _load_provider(provider_name: str):
         raise RuntimeError(
             f"Provider '{provider_name}' disabilitato. Abilitarlo in scripts/settings.py."
         )
-    if provider_name == "gemini":
-        from scripts.llm.providers.gemini import GeminiProvider
-        return GeminiProvider()
-    if provider_name == "claude":
-        from scripts.llm.providers.claude import ClaudeProvider
-        return ClaudeProvider()
+    if provider_name == "copilot":
+        from scripts.llm.providers.copilot import CopilotProvider
+        return CopilotProvider()
     raise ValueError(f"Provider non supportato: {provider_name}")
 
 
@@ -37,7 +34,7 @@ def update_from_summary(
 ) -> int:
     if provider_name is None:
         from scripts.settings import ENABLED_PROVIDERS
-        provider_name = ENABLED_PROVIDERS[0] if ENABLED_PROVIDERS else "gemini"
+        provider_name = ENABLED_PROVIDERS[0] if ENABLED_PROVIDERS else "copilot"
     provider = _load_provider(provider_name)
     if not provider.is_available():
         print(f"[kanban] Provider {provider_name} non disponibile, skip.")
@@ -138,7 +135,7 @@ def main() -> None:
 
     parser.add_argument("--include-archive", action="store_true",
                         help="Con --all, include anche le call archiviate.")
-    parser.add_argument("--provider", default=None, choices=["gemini", "claude"])
+    parser.add_argument("--provider", default=None, choices=["copilot"])
     parser.add_argument("--model", default="")
     args = parser.parse_args()
 
