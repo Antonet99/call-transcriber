@@ -97,6 +97,12 @@ def _summary_models(model: str) -> list[str]:
     return models
 
 
+def _reasoning_effort_for(model: str, effort: str | None) -> str | None:
+    if not model.startswith("gpt-5"):
+        return None
+    return effort or _cfg.COPILOT_REASONING_EFFORT
+
+
 class CopilotProvider(LlmProvider):
     def default_summary_model(self) -> str:
         return _cfg.COPILOT_SUMMARY_MODEL
@@ -123,7 +129,7 @@ class CopilotProvider(LlmProvider):
             session = await client.create_session(
                 on_permission_request=PermissionHandler.approve_all,
                 model=model,
-                reasoning_effort=reasoning_effort or _cfg.COPILOT_REASONING_EFFORT,
+                reasoning_effort=_reasoning_effort_for(model, reasoning_effort),
                 system_message={"mode": "replace", "content": _SYSTEM_MESSAGE},
                 available_tools=[],
                 enable_config_discovery=False,
