@@ -39,7 +39,7 @@ _UTF8 = "utf-8"
 _AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".webm", ".wma"}
 _VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
 
-ProviderName = Literal["copilot"]
+ProviderName = Literal["claude", "copilot"]
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +51,10 @@ def _load_provider(name: ProviderName) -> LlmProvider:
         raise RuntimeError(
             f"Provider '{name}' disabilitato. Abilitarlo in scripts/settings.py per usarlo."
         )
-    if name == "copilot":
+    if name == "claude":
+        from scripts.llm.providers.claude import ClaudeProvider
+        p = ClaudeProvider()
+    elif name == "copilot":
         from scripts.llm.providers.copilot import CopilotProvider
         p = CopilotProvider()
     else:
@@ -495,7 +498,7 @@ def main() -> None:
     parser.add_argument("--root-path", type=Path, default=None)
     parser.add_argument("--keep-video", action="store_true")
     parser.add_argument("--archive-max-mb", type=float, default=19.0)
-    parser.add_argument("--provider", default="copilot", choices=["copilot"])
+    parser.add_argument("--provider", default="claude", choices=["claude", "copilot"])
     parser.add_argument("--summary-model", default="")
     parser.add_argument("--task-model", default="")
     args = parser.parse_args()

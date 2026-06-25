@@ -8,13 +8,30 @@ from dotenv import load_dotenv as _load_dotenv
 _load_dotenv(_Path(__file__).parent.parent / ".env")
 
 # Provider abilitati.
-# Valori disponibili: "copilot"
+# Valori disponibili: "claude", "copilot"
 ENABLED_PROVIDERS: list[str] = [
+    "claude",
     "copilot",
 ]
 
 # Il tuo nome completo: viene escluso dai partecipanti nel titolo delle call
 MY_NAME: str = "Antonio Baio"
+
+# ---------------------------------------------------------------------------
+# Claude CLI  (effort: low | medium | high | xhigh | max)
+# ---------------------------------------------------------------------------
+CLAUDE_SUMMARY_MODEL: str = "claude-sonnet-4-6"
+CLAUDE_SUMMARY_EFFORT: str = "medium"
+
+CLAUDE_TASK_MODEL: str = "claude-sonnet-4-6"
+CLAUDE_TASK_EFFORT: str = "medium"
+
+CLAUDE_LIGHT_MODEL: str = "claude-sonnet-4-6"
+CLAUDE_LIGHT_EFFORT: str = "medium"
+
+# Subagent usati come revisori interni durante la generazione del riassunto
+CLAUDE_SUBAGENT_MODEL: str = "claude-sonnet-4-6"
+CLAUDE_SUBAGENT_EFFORT: str = "medium"
 
 # ---------------------------------------------------------------------------
 # GitHub Copilot SDK

@@ -20,6 +20,9 @@ def _load_provider(provider_name: str):
         raise RuntimeError(
             f"Provider '{provider_name}' disabilitato. Abilitarlo in scripts/settings.py."
         )
+    if provider_name == "claude":
+        from scripts.llm.providers.claude import ClaudeProvider
+        return ClaudeProvider()
     if provider_name == "copilot":
         from scripts.llm.providers.copilot import CopilotProvider
         return CopilotProvider()
