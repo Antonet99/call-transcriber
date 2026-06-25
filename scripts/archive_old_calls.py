@@ -95,7 +95,7 @@ def main() -> None:
     parser.add_argument("--root-path", type=Path, default=None)
     args = parser.parse_args()
 
-    root = args.root_path or Path(__file__).parent.parent
+    root = args.root_path or _cfg.VAULT_ROOT
     result = archive(root, args.days)
     print(f"Archiviate: {result['archived']}  Saltate: {result['skipped']}")
 

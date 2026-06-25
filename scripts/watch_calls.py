@@ -14,6 +14,8 @@ from pathlib import Path
 from watchdog.events import FileCreatedEvent, FileMovedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
+import scripts.settings as _cfg
+
 
 def _setup_logging(root: Path) -> None:
     log_dir = root / "logs"
@@ -94,7 +96,7 @@ def watch(
     **kwargs,
 ) -> None:
     if root is None:
-        root = Path(__file__).parent.parent
+        root = _cfg.VAULT_ROOT
 
     _setup_logging(root)
 

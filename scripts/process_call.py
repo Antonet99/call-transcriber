@@ -334,7 +334,7 @@ def process(
     if provider_name is None:
         provider_name = _cfg.ENABLED_PROVIDERS[0] if _cfg.ENABLED_PROVIDERS else "copilot"
     if root is None:
-        root = Path(__file__).parent.parent
+        root = _cfg.VAULT_ROOT
 
     resolved = input_path.resolve()
     if not resolved.exists():

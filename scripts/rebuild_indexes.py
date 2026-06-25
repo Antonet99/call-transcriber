@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import scripts.settings as _cfg
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Rigenera indici README.md Obsidian.")
@@ -15,7 +17,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    root = args.root_path or Path(__file__).parent.parent
+    root = args.root_path or _cfg.VAULT_ROOT
     from scripts.obsidian.indexes import rebuild
     result = rebuild(root, archive_old=args.archive_old)
     print(f"Indice globale: {result['global_index']}")

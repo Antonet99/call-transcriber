@@ -39,7 +39,7 @@ foreach ($legacyTaskName in $LegacyTaskNames) {
 # Action: il watcher scrive gia' su logs/watcher.log tramite logging Python.
 $action = New-ScheduledTaskAction `
     -Execute $venvPython `
-    -Argument "`"$watchScript`" --root-path `"$rootDir`"" `
+    -Argument "`"$watchScript`"" `
     -WorkingDirectory $rootDir
 
 # Trigger: al login dell'utente corrente

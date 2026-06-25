@@ -1,11 +1,19 @@
 # ---------------------------------------------------------------------------
 # Configurazione pipeline Call Transcriber
 # ---------------------------------------------------------------------------
+import os as _os
 from pathlib import Path as _Path
 
 from dotenv import load_dotenv as _load_dotenv
 
 _load_dotenv(_Path(__file__).parent.parent / ".env")
+
+# Root del vault Obsidian (completate/, da_processare/, .obsidian/).
+# In sviluppo locale (repo unificato) coincide con la root del codice.
+# Dopo la separazione codice/vault, impostare VAULT_ROOT nel .env.
+VAULT_ROOT: _Path = _Path(
+    _os.environ.get("VAULT_ROOT", str(_Path(__file__).parent.parent))
+)
 
 # Provider abilitati.
 # Valori disponibili: "claude", "copilot"
