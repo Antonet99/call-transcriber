@@ -35,9 +35,8 @@ _SUPPORTED_EXT = {
 
 
 class _CallHandler(FileSystemEventHandler):
-    def __init__(self, root: Path, provider: str, extra_kwargs: dict) -> None:
+    def __init__(self, root: Path, extra_kwargs: dict) -> None:
         self._root = root
-        self._provider = provider
         self._extra = extra_kwargs
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._known: set[str] = set()
@@ -67,7 +66,6 @@ class _CallHandler(FileSystemEventHandler):
                 process(
                     input_path=Path(path),
                     root=self._root,
-                    provider_name=self._provider,
                     **self._extra,
                 )
             except Exception as exc:
@@ -92,7 +90,6 @@ class _CallHandler(FileSystemEventHandler):
 
 def watch(
     root: Path | None = None,
-    provider: str = "claude",
     **kwargs,
 ) -> None:
     if root is None:
@@ -103,7 +100,7 @@ def watch(
     watch_dir = root / "da_processare"
     watch_dir.mkdir(parents=True, exist_ok=True)
 
-    handler = _CallHandler(root, provider, kwargs)
+    handler = _CallHandler(root, kwargs)
     observer = Observer()
     observer.schedule(handler, str(watch_dir), recursive=False)
     observer.start()
@@ -128,14 +125,12 @@ def watch(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Watcher cartella da_processare/.")
     parser.add_argument("--root-path", type=Path, default=None)
-    parser.add_argument("--provider", default="claude", choices=["claude", "copilot"])
     parser.add_argument("--archive-max-mb", type=float, default=19.0)
     parser.add_argument("--keep-video", action="store_true")
     args = parser.parse_args()
 
     watch(
         root=args.root_path,
-        provider=args.provider,
         archive_max_mb=args.archive_max_mb,
         keep_video=args.keep_video,
     )

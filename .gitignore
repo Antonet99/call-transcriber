@@ -8,9 +8,7 @@ assets/
 
 # Obsidian e tool locali
 .obsidian/
-.gemini/
 .claude/
-.antigravitycli/
 Kanban.md
 
 # Python

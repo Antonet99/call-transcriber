@@ -73,6 +73,11 @@ _UTF8 = "utf-8"
 _DIR_PATTERN = re.compile(r'^(\d{4}-\d{2}-\d{2})\s+(\d{2})\.(\d{2})\s+-\s+(.+)$')
 _INVALID_FNAME = set(r'\/:*?"<>|')
 _PERSON_SEGMENT = re.compile(r'^[\p{Lu}\p{Lt}][\w\'-]+$' if False else r"^[A-ZÁÀÈÉÌÍÎÓÒÙÚ][a-záàèéìíîóòùú'\-]+$")
+_ARCHIVE_DIR_NAME = "archivio"
+_ARCHIVED_TASKS_DIR_NAME = "progetti_archiviati"
+_TASK_CALLS_START = "<!-- TASK_CALLS:START -->"
+_TASK_CALLS_END = "<!-- TASK_CALLS:END -->"
+_TASK_CONTEXT_PLACEHOLDER = "<!-- Compila questa sezione con una breve descrizione del progetto, del suo obiettivo e dello stato attuale. -->"
 
 _GENERIC_HEADINGS = {
     'contesto', 'decisioni prese', 'punti discussi', 'task e action item',
@@ -99,6 +104,59 @@ def _parse_dir_name(name: str) -> tuple[str, str, str] | None:
     if not m:
         return None
     return m.group(1), f"{m.group(2)}:{m.group(3)}", m.group(4).strip()
+
+
+def _is_call_dir(directory: Path) -> bool:
+    """Riconosce una cartella call senza confonderla con una cartella progetto.
+
+    Le call correnti e archiviate hanno normalmente un nome con data/ora. La
+    seconda condizione mantiene compatibili eventuali cartelle legacy senza
+    data, ma esclude i progetti che contengono il loro README o la Kanban.
+    """
+    if not directory.is_dir() or directory.name == _ARCHIVE_DIR_NAME:
+        return False
+    if _parse_dir_name(directory.name):
+        return True
+    if (directory / "README.md").exists() or (directory / "Kanban.md").exists():
+        return False
+    return any(
+        item.is_file() and (
+            item.name == "trascrizione.txt"
+            or (item.suffix.lower() == ".md" and item.name != "README.md")
+        )
+        for item in directory.iterdir()
+    )
+
+
+def _call_dirs(project_dir: Path) -> list[Path]:
+    return sorted(
+        [d for d in project_dir.iterdir() if _is_call_dir(d)],
+        key=lambda d: d.name,
+        reverse=True,
+    )
+
+
+def _active_task_dirs(task_root: Path) -> list[Path]:
+    """Restituisce solo i progetti attivi direttamente sotto ``Task``."""
+    reserved = {_ARCHIVE_DIR_NAME, _ARCHIVED_TASKS_DIR_NAME}
+    return sorted(
+        [d for d in task_root.iterdir() if d.is_dir() and d.name not in reserved],
+        key=lambda d: d.name,
+    )
+
+
+def _archived_task_dirs(task_root: Path) -> list[Path]:
+    """Restituisce i progetti sotto il contenitore archivio reale del vault."""
+    container = task_root / _ARCHIVED_TASKS_DIR_NAME
+    if not container.exists():
+        return []
+    return sorted(
+        [
+            d for d in container.iterdir()
+            if d.is_dir() and d.name != _ARCHIVE_DIR_NAME
+        ],
+        key=lambda d: d.name,
+    )
 
 
 def _short_title(title: str) -> str:
@@ -208,7 +266,7 @@ def set_task_frontmatter(summary_path: Path, task_name: str) -> None:
     fm.write_with_frontmatter(summary_path, ordered, body)
 
 
-def _get_call_info(call_dir: Path, task_name: str) -> dict | None:
+def _get_call_info(call_dir: Path, task_name: str, archived: bool = False) -> dict | None:
     parsed = _parse_dir_name(call_dir.name)
     if parsed is None:
         title = call_dir.name
@@ -231,7 +289,149 @@ def _get_call_info(call_dir: Path, task_name: str) -> dict | None:
         "time": time_str,
         "title": title,
         "summary_path": summary_path,
+        "archived": archived,
     }
+
+
+def _task_call_lines(calls: list[dict], archived_calls: list[dict]) -> list[str]:
+    """Costruisce il blocco rigenerabile dell'indice call del progetto."""
+    lines = [
+        _TASK_CALLS_START,
+        f"## Call recenti ({len(calls)})",
+        "",
+    ]
+    if calls:
+        for call in calls:
+            sname = call["summary_path"].stem
+            target = _to_wiki_path(str(Path(call["directory"].name) / sname))
+            alias = f"{call['date']} - {call['title']}" if call['date'] else call['title']
+            lines.append(f"- [[{target}|{alias}]]")
+    else:
+        lines.append("Nessuna call recente.")
+
+    lines += ["", f"## Call archiviate ({len(archived_calls)})", ""]
+    if archived_calls:
+        for call in archived_calls:
+            sname = call["summary_path"].stem
+            target = _to_wiki_path(str(Path(_ARCHIVE_DIR_NAME) / call["directory"].name / sname))
+            alias = f"{call['date']} - {call['title']}" if call['date'] else call['title']
+            lines.append(f"- [[{target}|{alias}]]")
+    else:
+        lines.append("Nessuna call archiviata.")
+    lines.append(_TASK_CALLS_END)
+    return lines
+
+
+def _split_task_sections(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Divide un README in titolo/preambolo e sezioni di secondo livello."""
+    heading_pattern = re.compile(r"(?m)^##\s+.+$")
+    matches = list(heading_pattern.finditer(text))
+    if not matches:
+        return text.rstrip(), []
+
+    preamble = text[:matches[0].start()].rstrip()
+    sections: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        sections.append((match.group(0).strip(), text[match.end():end].strip()))
+    return preamble, sections
+
+
+def _section_name(heading: str) -> str:
+    return re.sub(r"\s+", " ", heading[3:].strip()).lower()
+
+
+def _render_task_readme(
+    readme: Path,
+    task_name: str,
+    people: list[str],
+    tags: list[str],
+    calls: list[dict],
+    archived_calls: list[dict],
+) -> None:
+    """Aggiorna solo il blocco call e preserva il contesto scritto a mano."""
+    existing = readme.read_text(encoding=_UTF8) if readme.exists() else ""
+    call_block = "\n".join(_task_call_lines(calls, archived_calls))
+
+    marker_pattern = re.compile(
+        rf"(?ms)^(?P<prefix>.*?)^{re.escape(_TASK_CALLS_START)}\s*$.*?^{re.escape(_TASK_CALLS_END)}(?P<suffix>.*)$"
+    )
+    marker_match = marker_pattern.match(existing)
+    if marker_match:
+        prefix = marker_match.group("prefix")
+        suffix = marker_match.group("suffix")
+        if prefix and not prefix.endswith("\n"):
+            prefix += "\n"
+        if prefix and not prefix.endswith("\n\n"):
+            prefix += "\n"
+        if suffix and not suffix.startswith("\n"):
+            suffix = "\n" + suffix
+        readme.write_text(prefix + call_block + suffix, encoding=_UTF8)
+        return
+
+    # Migrazione dei README legacy: le vecchie liste Call/Archivio sono
+    # generate e vengono sostituite; le altre sezioni manuali restano intatte.
+    preamble, sections = _split_task_sections(existing)
+    title = next(
+        (line.strip() for line in preamble.splitlines() if line.strip().startswith("# ")),
+        f"# {task_name}",
+    )
+    intro = "\n".join(
+        line for line in preamble.splitlines()
+        if line.strip() and line.strip() != title
+    ).strip()
+
+    context_section: tuple[str, str] | None = None
+    people_section: tuple[str, str] | None = None
+    tags_section: tuple[str, str] | None = None
+    preserved: list[tuple[str, str]] = []
+    legacy_notes: list[str] = []
+    generated_names = {"riepilogo", "archivio"}
+
+    for heading, body in sections:
+        name = _section_name(heading)
+        if name == "contesto del progetto":
+            context_section = (heading, body)
+        elif name == "persone coinvolte":
+            people_section = (heading, body)
+        elif name == "tag":
+            tags_section = (heading, body)
+        elif name.startswith("call") or name in generated_names:
+            if name == "riepilogo":
+                for line in body.splitlines():
+                    if line.strip() and not re.match(r"^\s*-\s*(Persone|Tag):", line, re.IGNORECASE):
+                        legacy_notes.append(line)
+        else:
+            preserved.append((heading, body))
+
+    lines = [title, ""]
+    if context_section:
+        lines += [context_section[0], "", context_section[1], ""]
+    else:
+        context_body = intro or _TASK_CONTEXT_PLACEHOLDER
+        lines += ["## Contesto del progetto", "", context_body, ""]
+
+    if people_section:
+        lines += [people_section[0], "", people_section[1], ""]
+    else:
+        lines += ["## Persone coinvolte", ""]
+        lines += [f"- {person}" for person in people]
+        lines.append("")
+
+    if tags_section:
+        lines += [tags_section[0], "", tags_section[1], ""]
+    else:
+        lines += ["## Tag", ""]
+        lines += [f"- {tag}" for tag in tags]
+        lines.append("")
+
+    if legacy_notes:
+        lines += ["## Note mantenute", "", *legacy_notes, ""]
+    for heading, body in preserved:
+        lines += [heading, "", body, ""]
+
+    lines += [call_block]
+    readme.write_text("\n".join(lines).rstrip() + "\n", encoding=_UTF8)
 
 
 def rebuild(root: Path, archive_old: bool = False) -> dict:
@@ -244,31 +444,45 @@ def rebuild(root: Path, archive_old: bool = False) -> dict:
     completed_root.mkdir(parents=True, exist_ok=True)
     task_root.mkdir(parents=True, exist_ok=True)
 
-    tasks = sorted([d for d in task_root.iterdir() if d.is_dir()], key=lambda d: d.name)
+    active_tasks = _active_task_dirs(task_root)
+    archived_tasks = _archived_task_dirs(task_root)
+    task_records = [
+        {"directory": task, "archived": False} for task in active_tasks
+    ] + [
+        {"directory": task, "archived": True} for task in archived_tasks
+    ]
     all_calls: list[dict] = []
 
-    for task in tasks:
+    for task_record in task_records:
+        task = task_record["directory"]
+        task_is_archived = task_record["archived"]
         kanban_path = task / "Kanban.md"
-        call_dirs = sorted(
-            [d for d in task.iterdir() if d.is_dir() and d.name != "archivio"],
-            key=lambda d: d.name,
-            reverse=True,
-        )
+        call_dirs = _call_dirs(task)
         call_dirs = [_try_add_people_to_dir(d, kanban_path) for d in call_dirs]
-        calls = [c for c in (_get_call_info(d, task.name) for d in call_dirs) if c]
+        calls = [
+            c for c in (_get_call_info(d, task.name, archived=False) for d in call_dirs)
+            if c
+        ]
 
         archive_dir = task / "archivio"
         archived_calls: list[dict] = []
         if archive_dir.exists():
-            archived_dirs = sorted(
-                [d for d in archive_dir.iterdir() if d.is_dir()],
-                key=lambda d: d.name,
-                reverse=True,
-            )
+            archived_dirs = _call_dirs(archive_dir)
             archived_dirs = [_try_add_people_to_dir(d, kanban_path, archived=True) for d in archived_dirs]
-            archived_calls = [c for c in (_get_call_info(d, task.name) for d in archived_dirs) if c]
+            archived_calls = [
+                c for c in (_get_call_info(d, task.name, archived=True) for d in archived_dirs)
+                if c
+            ]
 
         all_calls.extend(calls)
+        all_calls.extend(archived_calls)
+
+        if task_is_archived:
+            task_link_path = Path("Task") / _ARCHIVED_TASKS_DIR_NAME / task.name
+        else:
+            task_link_path = Path("Task") / task.name
+        for call in calls + archived_calls:
+            call["task_link_path"] = task_link_path
 
         # Aggregate people and tags from both active and archived
         people: list[str] = []
@@ -283,60 +497,77 @@ def rebuild(root: Path, archive_old: bool = False) -> dict:
         people = sorted(set(filter(None, people)))
         tags = sorted(set(filter(None, tags)))
 
-        lines: list[str] = [f"# {task.name}", ""]
-        if people or tags:
-            lines += ["## Riepilogo"]
-            if people:
-                lines.append(f"- Persone: {', '.join(people)}")
-            if tags:
-                lines.append(f"- Tag: {', '.join(tags)}")
-            lines.append("")
+        # La nuova struttura con sezioni manuali vale solo per i progetti
+        # attivi. I progetti già archiviati mantengono il README storico:
+        # serve come contesto per la classificazione, ma non deve essere
+        # riscritto o migrato da un rebuild.
+        if not task_is_archived:
+            readme = task / "README.md"
+            _render_task_readme(readme, task.name, people, tags, calls, archived_calls)
 
-        lines.append(f"## Call ({len(calls)})")
-        for call in calls:
-            sname = call["summary_path"].stem
-            target = _to_wiki_path(str(Path(call["directory"].name) / sname))
-            alias = f"{call['date']} - {call['title']}" if call['date'] else call['title']
-            lines.append(f"- [[{target}|{alias}]]")
-
-        if archived_calls:
-            lines += ["", "## Archivio"]
-            for call in archived_calls:
-                sname = call["summary_path"].stem
-                target = _to_wiki_path(str(Path("archivio") / call["directory"].name / sname))
-                alias = f"{call['date']} - {call['title']}" if call['date'] else call['title']
-                lines.append(f"- [[{target}|{alias}]]")
-
-        readme = task / "README.md"
-        readme.write_text("\n".join(lines) + "\n", encoding=_UTF8)
-
-    # Global README
+    # Global README. Il contenitore Task/progetti_archiviati non è un task:
+    # i suoi figli sono i progetti archiviati da proporre nella classificazione.
     global_lines: list[str] = ["# Knowledge base call", "", "## Task attive"]
-    if tasks:
-        for task in tasks:
-            count = sum(1 for c in all_calls if c["task"] == task.name)
+    if active_tasks:
+        for task in active_tasks:
+            recent_count = sum(
+                1 for c in all_calls
+                if c["task"] == task.name and c["task_link_path"] == Path("Task") / task.name
+                and not c["archived"]
+            )
+            archived_count = sum(
+                1 for c in all_calls
+                if c["task"] == task.name and c["task_link_path"] == Path("Task") / task.name
+                and c["archived"]
+            )
             target = _to_wiki_path(str(Path("Task") / task.name / "README"))
-            global_lines.append(f"- [[{target}|{task.name}]] - {count} call")
+            global_lines.append(
+                f"- [[{target}|{task.name}]] - ({recent_count} call recenti, {archived_count} archiviate)"
+            )
     else:
         global_lines.append("- Nessuna task presente.")
+
+    global_lines += ["", "## Task archiviate"]
+    if archived_tasks:
+        for task in archived_tasks:
+            task_path = Path("Task") / _ARCHIVED_TASKS_DIR_NAME / task.name
+            recent_count = sum(
+                1 for c in all_calls
+                if c["task"] == task.name and c["task_link_path"] == task_path
+                and not c["archived"]
+            )
+            archived_count = sum(
+                1 for c in all_calls
+                if c["task"] == task.name and c["task_link_path"] == task_path
+                and c["archived"]
+            )
+            target = _to_wiki_path(str(task_path / "README"))
+            global_lines.append(
+                f"- [[{target}|{task.name}]] - ({recent_count} call recenti, {archived_count} archiviate)"
+            )
+    else:
+        global_lines.append("- Nessuna task archiviata.")
 
     global_lines += ["", f"## Ultime {_cfg.INDEX_LATEST_CALLS_COUNT} call"]
     latest = sorted(all_calls, key=lambda c: c["directory"].name, reverse=True)[:_cfg.INDEX_LATEST_CALLS_COUNT]
     if latest:
         for call in latest:
             sname = call["summary_path"].stem
-            target = _to_wiki_path(
-                str(Path("Task") / call["task"] / call["directory"].name / sname)
-            )
+            call_base = call["task_link_path"]
+            if call["archived"]:
+                call_base /= _ARCHIVE_DIR_NAME
+            target = _to_wiki_path(str(call_base / call["directory"].name / sname))
             dt = f"{call['date']} {call['time']}" if call['date'] else call["directory"].name
             global_lines.append(f"- {dt} - [[{target}|{call['title']}]] (task: {call['task']})")
     else:
-        global_lines.append("- Nessuna call archiviata.")
+        global_lines.append("- Nessuna call presente.")
 
     (completed_root / "README.md").write_text("\n".join(global_lines) + "\n", encoding=_UTF8)
 
     return {
         "global_index": str(completed_root / "README.md"),
-        "task_indexes": len(tasks),
+        "task_indexes": len(task_records),
         "calls": len(all_calls),
+        "recent_calls": sum(1 for c in all_calls if not c["archived"]),
+        "archived_calls": sum(1 for c in all_calls if c["archived"]),
     }

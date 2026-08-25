@@ -6,7 +6,7 @@ from pathlib import Path as _Path
 
 from dotenv import load_dotenv as _load_dotenv
 
-_load_dotenv(_Path(__file__).parent.parent / ".env")
+_load_dotenv(_Path(__file__).parent.parent / ".env", override=True)
 
 # Root del vault Obsidian (completate/, da_processare/, .obsidian/).
 # In sviluppo locale (repo unificato) coincide con la root del codice.
@@ -14,13 +14,6 @@ _load_dotenv(_Path(__file__).parent.parent / ".env")
 VAULT_ROOT: _Path = _Path(
     _os.environ.get("VAULT_ROOT", str(_Path(__file__).parent.parent))
 )
-
-# Provider abilitati.
-# Valori disponibili: "claude", "copilot"
-ENABLED_PROVIDERS: list[str] = [
-    "claude",
-    "copilot",
-]
 
 # Il tuo nome completo: viene escluso dai partecipanti nel titolo delle call
 MY_NAME: str = "Antonio Baio"
@@ -40,22 +33,7 @@ CLAUDE_LIGHT_EFFORT: str = "medium"
 # Subagent usati come revisori interni durante la generazione del riassunto
 CLAUDE_SUBAGENT_MODEL: str = "claude-sonnet-4-6"
 CLAUDE_SUBAGENT_EFFORT: str = "medium"
-
-# ---------------------------------------------------------------------------
-# GitHub Copilot SDK
-# ---------------------------------------------------------------------------
-COPILOT_SUMMARY_MODEL: str = "gemini-3.1-pro-preview"
-COPILOT_SUMMARY_FALLBACK_MODEL: str = "gpt-5.4-mini"
-COPILOT_TASK_MODEL: str = "gpt-5.4-mini"
-COPILOT_LIGHT_MODEL: str = "gpt-5.4-mini"
-COPILOT_AUDIT_MODEL: str = "gpt-5.4-mini"
-
-COPILOT_REASONING_EFFORT: str = "medium"
-COPILOT_LIGHT_REASONING_EFFORT: str = "medium"
-
-COPILOT_SUMMARY_RETRIES: int = 2
-COPILOT_SUMMARY_TIMEOUT_SECONDS: int = 900
-COPILOT_LIGHT_TIMEOUT_SECONDS: int = 300
+CLAUDE_SUMMARY_RETRIES: int = 2
 
 # ---------------------------------------------------------------------------
 # Groq / Trascrizione
@@ -75,6 +53,7 @@ SOURCE_ARCHIVE_DAYS: int = 15
 # LLM prompts
 # ---------------------------------------------------------------------------
 TASK_PROMPT_SUMMARY_TRUNCATE: int = 5000
+TASK_PROMPT_TRANSCRIPT_TRUNCATE: int = 12000
 KANBAN_PROMPT_SUMMARY_TRUNCATE: int = 6000
 
 # ---------------------------------------------------------------------------

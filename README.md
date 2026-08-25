@@ -2,11 +2,17 @@
 
 Pipeline locale Windows per trasformare registrazioni audio/video di call in una knowledge base Markdown pronta per Obsidian.
 
-Il progetto prende file audio o video, estrae l'audio, lo trascrive con Groq Whisper, genera un riassunto Markdown fedele alla conversazione con un provider LLM modulare, archivia l'audio compresso e aggiorna indici navigabili con wikilink.
+Il progetto prende file audio o video, estrae l'audio, lo trascrive con Groq Whisper, genera un riassunto Markdown fedele alla conversazione con Claude CLI, archivia l'audio compresso e aggiorna indici navigabili con wikilink.
+
+## Istruzioni operative per l'agente
+
+Questo README è anche il contesto operativo della pipeline. Prima di generare o revisionare un riassunto, l'agente deve leggerlo insieme a `scripts/prompt_riassunto_call.md`, all'indice globale `VAULT_ROOT/completate/README.md` e, dopo il riconoscimento preliminare della task, al `README.md` della task assegnata. Le istruzioni e il contesto vanno inclusi nel prompt inviato a Claude; la trascrizione resta la fonte primaria per i fatti della call.
+
+L'agente deve distinguere fatti confermati, ipotesi e informazioni mancanti, non inventare persone, decisioni, owner o scadenze, considerare più autorevoli le call più recenti in caso di conflitto e non leggere né riportare `.env`, token o chiavi API. La classificazione può proporre una task preliminare, ma deve essere verificata dopo la generazione del riassunto.
 
 ## Funzionalita'
 
-- Watch automatico della cartella `da_processare/` (avviato automaticamente al login via Task Scheduler).
+- Watch automatico della cartella `vault/da_processare/` (avviato automaticamente al login via Task Scheduler).
 - Supporto a file audio e video comuni (`.m4a`, `.mp3`, `.wav`, `.mp4`, `.mkv`, `.mov`, ecc.).
 - Trascrizione con Groq Whisper (`whisper-large-v3-turbo`).
 - Riuso automatico di `trascrizione.txt` se una lavorazione precedente e' fallita dopo Whisper.
@@ -16,12 +22,10 @@ Il progetto prende file audio o video, estrae l'audio, lo trascrive con Groq Whi
   - sezioni granulari;
   - action item in tabella;
   - decisioni, dubbi, dipendenze e citazioni rilevanti.
-- Provider LLM modulare via GitHub Copilot SDK:
-  - modello summary principale `gemini-3.1-pro-preview`;
-  - fallback summary, audit, classificazione task e Kanban `gpt-5.4-mini`.
+- Claude CLI usa `claude-sonnet-4-6` per riassunti, classificazione e Kanban.
 - Classificazione automatica della call dentro una cartella task.
 - Archiviazione automatica delle call piu' vecchie di N giorni.
-- Archiviazione dei file audio/video originali in `completate/archivio`, con pulizia automatica dopo N giorni.
+- Archiviazione dei file audio/video originali in `vault/completate/archivio`, con pulizia automatica dopo N giorni.
 - Aggiornamento automatico della Kanban di progetto con card estratte dal riassunto.
 - Compressione dell'audio archiviato sotto una soglia configurabile.
 - Indici Obsidian auto-generati:
@@ -31,20 +35,7 @@ Il progetto prende file audio o video, estrae l'audio, lo trascrive con Groq Whi
 ## Architettura
 
 ```text
-Call/
-  da_processare/           ← copia qui i file da processare
-  completate/
-    README.md              ← indice globale auto-generato
-    archivio/              ← sorgenti audio/video originali processati
-    Task/
-      <nome task>/
-        README.md          ← indice task auto-generato
-        Kanban.md          ← kanban auto-aggiornata
-        <YYYY-MM-DD HH.mm - titolo>/
-          <titolo call>.md
-          audio_compresso.m4a
-        archivio/          ← call piu' vecchie di ARCHIVE_DAYS
-  logs/
+call-transcriber/          ← codice Python, launcher e configurazione
   scripts/
     process_call.py        ← orchestratore principale
     watch_calls.py         ← watcher cartella
@@ -61,16 +52,32 @@ Call/
       common.py
       providers/
         base.py
-        copilot.py
+        claude.py
   .env                     ← chiavi API (non tracciato)
   pyproject.toml
+
+Call/
+  vault/                   ← vault Obsidian vero
+    da_processare/         ← OBS deve salvare qui le registrazioni
+    completate/
+      README.md            ← indice globale auto-generato
+      archivio/            ← sorgenti audio/video originali processati
+      Task/
+        <nome task>/
+          README.md        ← indice task auto-generato
+          Kanban.md        ← kanban auto-aggiornata
+          <YYYY-MM-DD HH.mm - titolo>/
+            <titolo call>.md
+            audio_compresso.m4a
+          archivio/        ← call piu' vecchie di ARCHIVE_DAYS
+    logs/
 ```
 
 ## Requisiti di sistema
 
 - Python 3.11+
 - `ffmpeg` e `ffprobe` nel PATH
-- GitHub Copilot SDK autenticato tramite ambiente GitHub/Copilot
+- Claude Code CLI installata e autenticata
 
 Installazione con `winget`:
 
@@ -88,12 +95,11 @@ python -m venv .venv
 Crea il file `.env` nella root del progetto:
 
 ```
+VAULT_ROOT=C:\Users\ABAIO\OneDrive - ICONSULTING S.p.A\Desktop\Call\vault
 GROQ_API_KEY=<la-tua-chiave-groq>
-# opzionale, se l'SDK non trova gia' un'autenticazione GitHub/Copilot
-COPILOT_GITHUB_TOKEN=<token-github>
 ```
 
-Il provider LLM usa `github-copilot-sdk`. Il pacchetto espone il modulo Python `copilot`.
+La generazione e la classificazione usano esclusivamente Claude CLI, autenticata tramite `claude auth login`.
 
 ## Avvio automatico al login
 
@@ -103,7 +109,7 @@ Registra il watcher come task di Windows (una tantum):
 .\scripts\register_startup_task.ps1
 ```
 
-Da questo momento `watch_calls.py` si avvia automaticamente ad ogni login. Lo script rimuove anche il vecchio task PowerShell `Call Automation Watcher`, se presente, per evitare watcher duplicati. Il watcher elabora anche i file gia' presenti in `da_processare/` all'avvio.
+Da questo momento `watch_calls.py` si avvia automaticamente ad ogni login. Lo script rimuove anche il vecchio task PowerShell `Call Automation Watcher`, se presente, per evitare watcher duplicati. Il watcher elabora anche i file gia' presenti in `VAULT_ROOT\da_processare\` all'avvio.
 
 Comandi utili:
 
@@ -122,33 +128,28 @@ Unregister-ScheduledTask -TaskName 'CallWatcher' -Confirm:$false  # rimuovi
 ## Uso manuale (singola call)
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\process_call.py --input-path .\da_processare\call.m4a
+.\.venv\Scripts\python.exe scripts\process_call.py --input-path ..\Call\vault\da_processare\call.m4a
 ```
 
 Mantenere il video originale dopo la lavorazione:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\process_call.py --input-path .\da_processare\call.mp4 --keep-video
+.\.venv\Scripts\python.exe scripts\process_call.py --input-path ..\Call\vault\da_processare\call.mp4 --keep-video
 ```
 
-Senza `--keep-video`, il file sorgente viene spostato in `completate/archivio`. Con `--keep-video`, il video resta anche nel path originale e viene comunque copiato nell'archivio sorgenti.
+Senza `--keep-video`, il file sorgente viene spostato in `VAULT_ROOT\completate\archivio`. Con `--keep-video`, il video resta anche nel path originale e viene comunque copiato nell'archivio sorgenti.
 
 ## Configurazione
 
 Tutti i parametri sono in `scripts/settings.py`:
 
 ```python
-# Provider abilitati
-ENABLED_PROVIDERS = ["copilot"]
-
-# GitHub Copilot SDK
-COPILOT_SUMMARY_MODEL = "gemini-3.1-pro-preview"
-COPILOT_SUMMARY_FALLBACK_MODEL = "gpt-5.4-mini"
-COPILOT_TASK_MODEL    = "gpt-5.4-mini"
-COPILOT_LIGHT_MODEL   = "gpt-5.4-mini"
-COPILOT_AUDIT_MODEL   = "gpt-5.4-mini"
-COPILOT_REASONING_EFFORT = "medium"
-COPILOT_SUMMARY_RETRIES = 2
+# Claude CLI
+CLAUDE_SUMMARY_MODEL = "claude-sonnet-4-6"
+CLAUDE_SUMMARY_EFFORT = "medium"
+CLAUDE_TASK_MODEL = "claude-sonnet-4-6"
+CLAUDE_LIGHT_MODEL = "claude-sonnet-4-6"
+CLAUDE_SUMMARY_RETRIES = 2
 
 # Groq / Trascrizione
 GROQ_WHISPER_MODEL        = "whisper-large-v3-turbo"
@@ -164,17 +165,18 @@ SOURCE_ARCHIVE_DAYS = 15
 KANBAN_MAX_CARDS_PER_CALL = 4
 ```
 
-## Provider LLM
+## Claude CLI
 
-`copilot` e' il provider predefinito e usa GitHub Copilot SDK in Python.
+Claude CLI è l'unico motore LLM della pipeline.
 
 Il flusso qualitativo del riassunto resta composto da piu' passaggi:
 
-1. draft del riassunto con `COPILOT_SUMMARY_MODEL`, con fallback a `COPILOT_SUMMARY_FALLBACK_MODEL` se la chiamata fallisce;
-2. audit metadati, persone, sistemi, tag e frontmatter con `COPILOT_AUDIT_MODEL`;
-3. audit decisioni, action item, dipendenze, domande aperte e citazioni con `COPILOT_AUDIT_MODEL`;
-4. revisione finale del Markdown se gli audit segnalano correzioni;
-5. validazione locale del formato e retry se il Markdown non e' valido.
+1. riconoscimento preliminare della task usando trascrizione, indice globale e task attive/archiviate;
+2. assemblaggio del prompt con `scripts/prompt_riassunto_call.md`, questo README, l'indice globale e il README della task preliminare;
+3. draft del riassunto con Claude;
+4. audit interni tramite i subagent Claude e revisione finale;
+5. validazione locale del formato e retry se il Markdown non e' valido;
+6. classificazione finale dopo il riassunto, con fallback alla task preliminare se il provider non risponde.
 
 ## Output
 
@@ -195,32 +197,33 @@ data: 2026-05-13
 ora: "11:37"
 task: "[[Italgas - MCP Server]]"
 persone: [Daniela, Marco]
-sistemi: [Databricks, GitHub Copilot SDK]
+sistemi: [Databricks, Claude Code]
 tags: [call, italgas, mcp-server]
 ---
 ```
 
 ## Flusso end-to-end
 
-1. Il file viene copiato in `da_processare/`.
+1. Il file viene copiato in `VAULT_ROOT\da_processare\`.
 2. Il watcher rileva il file.
 3. Attesa finche' dimensione e timestamp sono stabili.
 4. `ffmpeg` estrae o converte l'audio in `audio.m4a`.
 5. Se `trascrizione.txt` esiste gia' nella cartella della call, viene riusata; altrimenti Groq Whisper la produce con chunking automatico per file grandi.
-6. GitHub Copilot SDK genera il riassunto Markdown e lo sottopone agli audit.
-7. Titolo e frontmatter vengono normalizzati.
-8. GitHub Copilot SDK classifica la call rispetto alle task esistenti.
-9. La cartella viene spostata sotto `completate/Task/<task>/`.
-10. L'audio viene compresso in `audio_compresso.m4a`.
-11. I file intermedi vengono rimossi, mantenendo riassunto, trascrizione e audio compresso.
-12. Il file sorgente audio/video viene spostato in `completate/archivio`.
-13. I sorgenti archiviati piu' vecchi di `SOURCE_ARCHIVE_DAYS` vengono eliminati.
-14. Gli indici Obsidian vengono rigenerati.
-15. La Kanban del task viene aggiornata con le nuove card.
+6. La pipeline riconosce preliminarmente la task usando `completate/README.md` e i README disponibili.
+7. Claude genera il riassunto usando prompt, README root, indice globale e README task preliminare.
+8. Titolo e frontmatter vengono normalizzati.
+9. La classificazione finale verifica la task preliminare usando riassunto, trascrizione, indice globale e README di tutte le task.
+10. La cartella viene spostata sotto `VAULT_ROOT\completate\Task\<task>\`.
+11. L'audio viene compresso in `audio_compresso.m4a`.
+12. I file intermedi vengono rimossi, mantenendo riassunto, trascrizione e audio compresso.
+13. Il file sorgente audio/video viene spostato in `VAULT_ROOT\completate\archivio`.
+14. I sorgenti archiviati piu' vecchi di `SOURCE_ARCHIVE_DAYS` vengono eliminati.
+15. Gli indici Obsidian vengono rigenerati; i README dei task attivi aggiornano solo il blocco call generato.
+16. La Kanban del task viene aggiornata con le nuove card.
 
 ## Knowledge base Obsidian
 
-La cartella `completate/` puo' essere aperta direttamente come vault Obsidian.
+La cartella `C:\Users\ABAIO\OneDrive - ICONSULTING S.p.A\Desktop\Call\vault` e' il vault Obsidian da aprire.
 
 La pipeline genera automaticamente:
 
@@ -243,18 +246,9 @@ Per archiviare anche le call vecchie prima di rigenerare gli indici:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\update_project_kanban.py `
-  --summary-path ".\completate\Task\<task>\<call>\<titolo>.md" `
-  --task-directory ".\completate\Task\<task>"
+  --summary-path "..\Call\vault\completate\Task\<task>\<call>\<titolo>.md" `
+  --task-directory "..\Call\vault\completate\Task\<task>"
 ```
-
-## Sviluppo
-
-### Aggiungere un provider LLM
-
-1. Crea `scripts/llm/providers/<nome>.py` che estende `LlmProvider` (vedi `base.py`).
-2. Implementa `is_available`, `default_summary_model`, `default_task_model`, `invoke_summary`, `invoke_task_classification`, `invoke_light`.
-3. Aggiungi il nome a `ENABLED_PROVIDERS` in `settings.py`.
-4. Registra il caricamento in `_load_provider()` dentro `process_call.py` e `update_project_kanban.py`.
 
 ### File esclusi dal repository
 
@@ -266,7 +260,7 @@ Registrazioni, audio compressi, trascrizioni, riassunti, log, vault generati e `
 
 **`ffmpeg` non trovato**: `winget install Gyan.FFmpeg` e riavvia il terminale.
 
-**Provider Copilot non disponibile**: verifica che `github-copilot-sdk` sia installato nella venv e che l'autenticazione GitHub/Copilot sia disponibile.
+**Claude CLI non disponibile**: verifica che `claude` sia installato, presente nel PATH e autenticato.
 
 **La call finisce nella root di `completate/Task/`**: il provider LLM non ha riconosciuto nessuna task. Verifica che le cartelle task abbiano nomi descrittivi.
 

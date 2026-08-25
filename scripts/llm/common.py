@@ -11,22 +11,93 @@ import scripts.settings as _cfg
 # Prompt assembly
 # ---------------------------------------------------------------------------
 
-def build_summary_prompt(prompt_path: Path, transcript: str) -> str:
-    prompt = prompt_path.read_text(encoding="utf-8")
-    return f"{prompt}\n\n---\n\nTrascrizione da riassumere:\n\n{transcript}"
+def _read_context(path: Path | None, limit: int = 12000) -> str:
+    if path is None or not path.exists() or not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8").strip()[:limit]
 
 
-def build_task_prompt(task_names: list[str], title: str, summary: str) -> str:
+def build_summary_prompt(
+    prompt_path: Path,
+    transcript: str,
+    project_instructions_path: Path | None = None,
+    global_index_path: Path | None = None,
+    task_readme_path: Path | None = None,
+) -> str:
+    prompt = prompt_path.read_text(encoding="utf-8").strip()
+    sections = [prompt]
+
+    if project_instructions_path is not None and not project_instructions_path.is_file():
+        raise FileNotFoundError(
+            f"Istruzioni operative del progetto non trovate: {project_instructions_path}"
+        )
+    project_instructions = _read_context(project_instructions_path)
+    if project_instructions:
+        sections += [
+            "Istruzioni di progetto da leggere e applicare:",
+            project_instructions,
+        ]
+
+    global_index = _read_context(global_index_path)
+    if global_index:
+        sections += [
+            "Indice globale delle task e delle call:",
+            global_index,
+        ]
+
+    task_readme = _read_context(task_readme_path)
+    if task_readme:
+        sections += [
+            "README del progetto assegnato:",
+            task_readme,
+        ]
+
+    sections += ["Trascrizione da riassumere:", transcript]
+    return "\n\n---\n\n".join(sections)
+
+
+def build_task_prompt(
+    task_names: list[str],
+    title: str = "",
+    summary: str = "",
+    *,
+    transcript: str = "",
+    global_index: str = "",
+    task_contexts: dict[str, str] | None = None,
+    preliminary_task: str = "",
+) -> str:
     task_list = "\n".join(f"- {t}" for t in task_names)
-    trimmed = summary[:_cfg.TASK_PROMPT_SUMMARY_TRUNCATE]
-    return (
-        "Devi classificare una call già riassunta dentro una delle cartelle task esistenti.\n\n"
-        "Rispondi solo con il nome esatto di una cartella tra quelle elencate. "
-        "Non aggiungere spiegazioni, virgolette, markdown o testo extra.\n\n"
-        f"Cartelle task disponibili:\n{task_list}\n\n"
-        f"Titolo call:\n{title}\n\n"
-        f"Riassunto call:\n{trimmed}"
-    )
+    trimmed_summary = summary[:_cfg.TASK_PROMPT_SUMMARY_TRUNCATE]
+    trimmed_transcript = transcript[:_cfg.TASK_PROMPT_TRANSCRIPT_TRUNCATE]
+    sections = [
+        "Devi assegnare una call a una delle task elencate, includendo anche le task archiviate.",
+        "Usa il contenuto della trascrizione o del riassunto e l'indice globale.",
+        "Rispondi solo con il nome esatto di una task tra quelle elencate. "
+        "Non aggiungere spiegazioni, virgolette, markdown o testo extra.",
+        f"Task disponibili:\n{task_list}",
+    ]
+    if preliminary_task:
+        sections.append(
+            f"Assegnazione preliminare da verificare, non vincolante:\n{preliminary_task}"
+        )
+    if global_index:
+        sections.append(f"Indice globale delle task:\n{global_index}")
+    if task_contexts:
+        sections.insert(2, "Usa anche il README di ciascuna task quando disponibile.")
+        contexts = []
+        for name in task_names:
+            context = task_contexts.get(name, "").strip()
+            if context:
+                contexts.append(f"README task {name}:\n{context[:6000]}")
+        if contexts:
+            sections.append("\n\n".join(contexts))
+    if title:
+        sections.append(f"Titolo call:\n{title}")
+    if trimmed_summary:
+        sections.append(f"Riassunto call:\n{trimmed_summary}")
+    if trimmed_transcript:
+        sections.append(f"Trascrizione call:\n{trimmed_transcript}")
+    return "\n\n---\n\n".join(sections)
 
 
 def build_kanban_prompt(summary: str, kanban_content: str, call_wikilink: str, call_label: str) -> str:

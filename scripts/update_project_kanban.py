@@ -7,6 +7,7 @@ from pathlib import Path
 
 import scripts.settings as _cfg
 from scripts.llm import common as llm_common
+from scripts.llm.providers.claude import ClaudeProvider
 from scripts.obsidian import kanban
 
 _CARD_RE = re.compile(r'^\-\s+\[\s*\]')
@@ -14,33 +15,14 @@ _DIR_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}\s+\d{2}\.\d{2}\s+-\s+')
 _UTF8 = "utf-8"
 
 
-def _load_provider(provider_name: str):
-    from scripts.settings import ENABLED_PROVIDERS
-    if provider_name not in ENABLED_PROVIDERS:
-        raise RuntimeError(
-            f"Provider '{provider_name}' disabilitato. Abilitarlo in scripts/settings.py."
-        )
-    if provider_name == "claude":
-        from scripts.llm.providers.claude import ClaudeProvider
-        return ClaudeProvider()
-    if provider_name == "copilot":
-        from scripts.llm.providers.copilot import CopilotProvider
-        return CopilotProvider()
-    raise ValueError(f"Provider non supportato: {provider_name}")
-
-
 def update_from_summary(
     summary_path: Path,
     task_dir: Path,
-    provider_name: str | None = None,
     model: str = "",
 ) -> int:
-    if provider_name is None:
-        from scripts.settings import ENABLED_PROVIDERS
-        provider_name = ENABLED_PROVIDERS[0] if ENABLED_PROVIDERS else "copilot"
-    provider = _load_provider(provider_name)
+    provider = ClaudeProvider()
     if not provider.is_available():
-        print(f"[kanban] Provider {provider_name} non disponibile, skip.")
+        print("[kanban] Claude CLI non disponibile, skip.")
         return 0
 
     kanban_path = task_dir / "Kanban.md"
@@ -94,7 +76,6 @@ def update_from_summary(
 
 def update_all(
     task_dir: Path,
-    provider_name: str | None = None,
     model: str = "",
     include_archive: bool = False,
 ) -> int:
@@ -122,7 +103,7 @@ def update_all(
         if not candidates:
             continue
         summary_path = candidates[0]
-        total += update_from_summary(summary_path, task_dir, provider_name, model)
+        total += update_from_summary(summary_path, task_dir, model)
 
     print(f"[kanban] Totale card aggiunte: {total}")
     return total
@@ -138,14 +119,13 @@ def main() -> None:
 
     parser.add_argument("--include-archive", action="store_true",
                         help="Con --all, include anche le call archiviate.")
-    parser.add_argument("--provider", default=None, choices=["copilot"])
     parser.add_argument("--model", default="")
     args = parser.parse_args()
 
     if args.all:
-        update_all(args.task_directory, args.provider, args.model, args.include_archive)
+        update_all(args.task_directory, args.model, args.include_archive)
     else:
-        update_from_summary(args.summary_path, args.task_directory, args.provider, args.model)
+        update_from_summary(args.summary_path, args.task_directory, args.model)
 
 
 if __name__ == "__main__":

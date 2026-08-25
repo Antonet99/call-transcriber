@@ -44,7 +44,7 @@ data:
 ora:
 task:
 persone: [Daniela, Marco]
-sistemi: [Databricks, GitHub Copilot SDK]
+sistemi: [Databricks, Claude Code]
 tags: [call, italgas, mcp-server, autenticazione]
 ---
 

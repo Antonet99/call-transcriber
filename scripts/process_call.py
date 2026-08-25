@@ -12,13 +12,12 @@ import shutil
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal
 
 from rich.console import Console as _Console
 
 from scripts.audio import ffmpeg as _ffmpeg
 from scripts.llm import common as llm_common
-from scripts.llm.providers.base import LlmProvider
+from scripts.llm.providers.claude import ClaudeProvider
 from scripts.obsidian import frontmatter as fm
 from scripts.obsidian import indexes as obs_indexes
 import scripts.settings as _cfg
@@ -39,30 +38,15 @@ _UTF8 = "utf-8"
 _AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".webm", ".wma"}
 _VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
 
-ProviderName = Literal["claude", "copilot"]
-
-
 # ---------------------------------------------------------------------------
 # Provider loading
 # ---------------------------------------------------------------------------
 
-def _load_provider(name: ProviderName) -> LlmProvider:
-    if name not in _cfg.ENABLED_PROVIDERS:
-        raise RuntimeError(
-            f"Provider '{name}' disabilitato. Abilitarlo in scripts/settings.py per usarlo."
-        )
-    if name == "claude":
-        from scripts.llm.providers.claude import ClaudeProvider
-        p = ClaudeProvider()
-    elif name == "copilot":
-        from scripts.llm.providers.copilot import CopilotProvider
-        p = CopilotProvider()
-    else:
-        raise ValueError(f"Provider sconosciuto: {name}")
-
-    if not p.is_available():
-        raise RuntimeError(f"Provider LLM non disponibile: {name}")
-    return p
+def _load_claude() -> ClaudeProvider:
+    provider = ClaudeProvider()
+    if not provider.is_available():
+        raise RuntimeError("Claude CLI non disponibile.")
+    return provider
 
 
 # ---------------------------------------------------------------------------
@@ -234,24 +218,123 @@ def _rename_summary(summary_path: Path, title: str) -> Path:
     return target
 
 
+def _global_index_path(root: Path) -> Path:
+    return root / "completate" / "README.md"
+
+
+def _project_instructions_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "README.md"
+
+
+def _read_text(path: Path, limit: int = 12000) -> str:
+    if not path.exists() or not path.is_file():
+        return ""
+    return path.read_text(encoding=_UTF8).strip()[:limit]
+
+
+def _is_task_group(path: Path) -> bool:
+    name = path.name.lower()
+    if name in {"archivio", "archiviati", "progetti_archiviati"}:
+        return True
+    return any(child.is_dir() and (child / "README.md").is_file() for child in path.iterdir())
+
+
+def _is_call_directory(path: Path) -> bool:
+    return bool(re.match(r"^\d{4}-\d{2}-\d{2}\s+\d{2}\.\d{2}\s+-\s+", path.name))
+
+
+def _discover_task_dirs(root: Path) -> list[Path]:
+    """Trova task attive e archiviate, incluse eventuali task annidate."""
+    task_root = root / "completate" / "Task"
+    if not task_root.exists():
+        return []
+
+    candidates: set[Path] = set()
+    for readme in task_root.rglob("README.md"):
+        task_dir = readme.parent
+        if task_dir == task_root or _is_task_group(task_dir):
+            continue
+        if _is_call_directory(task_dir):
+            continue
+        candidates.add(task_dir)
+
+    # Mantiene assegnabili anche task nuove il cui README non è ancora stato creato.
+    for task_dir in task_root.iterdir():
+        if not task_dir.is_dir() or _is_task_group(task_dir):
+            continue
+        candidates.add(task_dir)
+        for nested in task_dir.iterdir():
+            if (
+                nested.is_dir()
+                and (nested / "README.md").is_file()
+                and not _is_task_group(nested)
+            ):
+                candidates.add(nested)
+
+    return sorted(candidates, key=lambda path: (path.name.lower(), str(path).lower()))
+
+
+def _task_contexts(task_dirs: list[Path]) -> dict[str, str]:
+    return {
+        task_dir.name: _read_text(task_dir / "README.md", limit=6000)
+        for task_dir in task_dirs
+        if (task_dir / "README.md").is_file()
+    }
+
+
+def _recognize_task(
+    root: Path,
+    transcript: str,
+    provider: ClaudeProvider,
+    model: str,
+) -> Path | None:
+    task_dirs = _discover_task_dirs(root)
+    if not task_dirs:
+        return None
+
+    global_index = _read_text(_global_index_path(root))
+    prompt = llm_common.build_task_prompt(
+        [task_dir.name for task_dir in task_dirs],
+        transcript=transcript,
+        global_index=global_index,
+    )
+    try:
+        answer = provider.invoke_task_classification(prompt, model or provider.default_task_model())
+        return llm_common.select_task(task_dirs, answer)
+    except Exception as exc:
+        print(f"[warn] Riconoscimento preliminare task fallito: {exc}")
+        return None
+
+
 def _get_task_dir(
     root: Path,
     summary_path: Path,
     title: str,
-    provider: LlmProvider,
+    provider: ClaudeProvider,
     model: str,
+    transcript: str = "",
+    preliminary_task: Path | None = None,
 ) -> Path:
     task_root = root / "completate" / "Task"
     if not task_root.exists():
         return root / "completate"
 
-    tasks = sorted([d for d in task_root.iterdir() if d.is_dir()], key=lambda d: d.name)
+    tasks = _discover_task_dirs(root)
     if not tasks:
         return task_root
 
     summary = summary_path.read_text(encoding=_UTF8)
-    task_names = [d.name for d in tasks]
-    prompt = llm_common.build_task_prompt(task_names, title, summary)
+    global_index = _read_text(_global_index_path(root))
+    task_names = [task.name for task in tasks]
+    prompt = llm_common.build_task_prompt(
+        task_names,
+        title,
+        summary,
+        transcript=transcript,
+        global_index=global_index,
+        task_contexts=_task_contexts(tasks),
+        preliminary_task=preliminary_task.name if preliminary_task else "",
+    )
     try:
         answer = provider.invoke_task_classification(prompt, model or provider.default_task_model())
         selected = llm_common.select_task(tasks, answer)
@@ -259,6 +342,8 @@ def _get_task_dir(
             return selected
     except Exception as exc:
         print(f"[warn] Classificazione task fallita: {exc}")
+    if preliminary_task in tasks:
+        return preliminary_task
     return task_root
 
 
@@ -267,15 +352,24 @@ def _get_task_dir(
 # ---------------------------------------------------------------------------
 
 def _invoke_summary(
-    provider: LlmProvider,
+    provider: ClaudeProvider,
     transcript_path: Path,
     output_path: Path,
     prompt_path: Path,
     model: str,
+    project_instructions_path: Path | None = None,
+    global_index_path: Path | None = None,
+    task_readme_path: Path | None = None,
 ) -> None:
     transcript = transcript_path.read_text(encoding=_UTF8)
-    prompt = llm_common.build_summary_prompt(prompt_path, transcript)
-    attempts = max(1, _cfg.COPILOT_SUMMARY_RETRIES + 1)
+    prompt = llm_common.build_summary_prompt(
+        prompt_path,
+        transcript,
+        project_instructions_path=project_instructions_path,
+        global_index_path=global_index_path,
+        task_readme_path=task_readme_path,
+    )
+    attempts = max(1, _cfg.CLAUDE_SUMMARY_RETRIES + 1)
     retry_note = ""
     last_error: Exception | None = None
 
@@ -304,18 +398,6 @@ def _invoke_summary(
     raise last_error or RuntimeError("Generazione riassunto fallita.")
 
 
-def _summarize(
-    transcript_path: Path,
-    output_path: Path,
-    prompt_path: Path,
-    provider_name: ProviderName,
-    model: str,
-) -> tuple[ProviderName, LlmProvider]:
-    provider = _load_provider(provider_name)
-    _invoke_summary(provider, transcript_path, output_path, prompt_path, model)
-    return provider_name, provider
-
-
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -325,14 +407,11 @@ def process(
     root: Path | None = None,
     keep_video: bool = False,
     archive_max_mb: float | None = None,
-    provider_name: ProviderName | None = None,
     summary_model: str = "",
     task_model: str = "",
 ) -> dict:
     if archive_max_mb is None:
         archive_max_mb = _cfg.ARCHIVE_MAX_MB
-    if provider_name is None:
-        provider_name = _cfg.ENABLED_PROVIDERS[0] if _cfg.ENABLED_PROVIDERS else "copilot"
     if root is None:
         root = _cfg.VAULT_ROOT
 
@@ -377,6 +456,8 @@ def process(
     transcript_path = call_dir / "trascrizione.txt"
     summary_path = call_dir / "riassunto.md"
     prompt_path = Path(__file__).parent / "prompt_riassunto_call.md"
+    project_instructions_path = _project_instructions_path()
+    global_index_path = _global_index_path(root)
 
     t = time.perf_counter()
     transcript_text = _read_cached_transcript(transcript_path)
@@ -388,14 +469,32 @@ def process(
             transcript_text = transcribe(audio_path, transcript_path)
         _ok(f"Trascrizione completata ({len(transcript_text)} caratteri)", time.perf_counter() - t)
 
+    claude = _load_claude()
+
     t = time.perf_counter()
-    with _con.status(f"  Generazione riassunto ({provider_name})..."):
-        active_provider_name, active_provider = _summarize(
+    with _con.status("  Riconoscimento preliminare task..."):
+        preliminary_task = _recognize_task(
+            root,
+            transcript_text,
+            claude,
+            task_model,
+        )
+    if preliminary_task:
+        _ok(f"Task preliminare: [bold]{preliminary_task.name}[/bold]")
+    else:
+        _ok("Task preliminare non riconosciuta", time.perf_counter() - t)
+
+    t = time.perf_counter()
+    with _con.status("  Generazione riassunto (Claude)..."):
+        _invoke_summary(
+            provider=claude,
             transcript_path=transcript_path,
             output_path=summary_path,
             prompt_path=prompt_path,
-            provider_name=provider_name,
             model=summary_model,
+            project_instructions_path=project_instructions_path,
+            global_index_path=global_index_path,
+            task_readme_path=(preliminary_task / "README.md") if preliminary_task else None,
         )
     _ok("Riassunto generato", time.perf_counter() - t)
 
@@ -409,11 +508,18 @@ def process(
     _set_summary_title(summary_path, context_title)
 
     final_call_name = f"{timestamp.strftime('%Y-%m-%d %H.%M')} - {context_title}"
-    active_task_model = task_model if active_provider_name == provider_name else ""
     t = time.perf_counter()
     with _con.status("  Classificazione task..."):
-        task_dir = _get_task_dir(root, summary_path, context_title, active_provider, active_task_model)
-    task_name = task_dir.name if (task_dir.parent == root / "completate" / "Task") else ""
+        task_dir = _get_task_dir(
+            root,
+            summary_path,
+            context_title,
+            claude,
+            task_model,
+            transcript=transcript_text,
+            preliminary_task=preliminary_task,
+        )
+    task_name = task_dir.name if task_dir != root / "completate" / "Task" else ""
     _ok(f"Task: [bold]{task_dir.name}[/bold]", time.perf_counter() - t)
 
     final_call_dir = _unique_path(task_dir / final_call_name)
@@ -472,7 +578,7 @@ def process(
         try:
             from scripts.update_project_kanban import update_from_summary
             if task_dir.exists():
-                update_from_summary(summary_path, task_dir, active_provider_name)
+                update_from_summary(summary_path, task_dir)
             kanban_ok = True
         except Exception as exc:
             _warn(f"Kanban non aggiornata (non bloccante): {exc}")
@@ -488,7 +594,7 @@ def process(
         "transcript": str(transcript_path),
         "summary": str(summary_path),
         "source_archive": str(source_archive_path) if source_archive_path else "",
-        "provider": active_provider_name,
+        "provider": "claude",
     }
 
 
@@ -498,7 +604,6 @@ def main() -> None:
     parser.add_argument("--root-path", type=Path, default=None)
     parser.add_argument("--keep-video", action="store_true")
     parser.add_argument("--archive-max-mb", type=float, default=19.0)
-    parser.add_argument("--provider", default="claude", choices=["claude", "copilot"])
     parser.add_argument("--summary-model", default="")
     parser.add_argument("--task-model", default="")
     args = parser.parse_args()
@@ -508,7 +613,6 @@ def main() -> None:
         root=args.root_path,
         keep_video=args.keep_video,
         archive_max_mb=args.archive_max_mb,
-        provider_name=args.provider,
         summary_model=args.summary_model,
         task_model=args.task_model,
     )

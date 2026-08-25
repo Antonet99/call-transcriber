@@ -12,7 +12,7 @@ param(
 
 $rootDir = Split-Path -Parent $PSScriptRoot
 $venvPython = Join-Path $rootDir '.venv\Scripts\python.exe'
-$watchScript = Join-Path $PSScriptRoot 'watch_calls.py'
+$watchLauncher = Join-Path $PSScriptRoot 'start_watcher.cmd'
 $logDir = Join-Path $rootDir 'logs'
 $logFile = Join-Path $logDir 'watcher.log'
 
@@ -36,10 +36,9 @@ foreach ($legacyTaskName in $LegacyTaskNames) {
     }
 }
 
-# Action: il watcher scrive gia' su logs/watcher.log tramite logging Python.
+# Action: il launcher imposta UTF-8 e lascia a settings.py il VAULT_ROOT da .env.
 $action = New-ScheduledTaskAction `
-    -Execute $venvPython `
-    -Argument "`"$watchScript`"" `
+    -Execute $watchLauncher `
     -WorkingDirectory $rootDir
 
 # Trigger: al login dell'utente corrente

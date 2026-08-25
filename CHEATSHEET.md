@@ -3,8 +3,12 @@
 Tutti i comandi vanno eseguiti dalla root del progetto:
 
 ```powershell
-cd "C:\Users\ABAIO\OneDrive - ICONSULTING S.p.A\Desktop\Call"
+cd "C:\Users\ABAIO\OneDrive - ICONSULTING S.p.A\Desktop\call-transcriber"
 ```
+
+Nota: il codice vive in `Desktop\call-transcriber`, mentre il vault Obsidian
+vero vive in `Desktop\Call\vault`. I comandi sotto vanno eseguiti dalla root
+del codice; gli input e gli output operativi stanno sotto `VAULT_ROOT`.
 
 Alias consigliato per non ripetere il path del Python ogni volta:
 
@@ -50,7 +54,7 @@ Get-ScheduledTask -TaskName 'CallWatcher' | Select-Object TaskName, State
 ### Monitoraggio background in tempo reale
 
 ```powershell
-Get-Content -Path ".\logs\watcher.log" -Wait -Tail 30
+Get-Content -Path "..\Call\vault\logs\watcher.log" -Wait -Tail 30
 ```
 
 ---
@@ -60,25 +64,16 @@ Get-Content -Path ".\logs\watcher.log" -Wait -Tail 30
 ```powershell
 # Caso base
 .\.venv\Scripts\python.exe scripts\process_call.py `
-  --input-path ".\da_processare\registrazione.m4a"
+  --input-path "..\Call\vault\da_processare\registrazione.m4a"
 
 # Mantieni il video anche nel path originale dopo la lavorazione
 .\.venv\Scripts\python.exe scripts\process_call.py `
-  --input-path ".\da_processare\riunione.mp4" `
+  --input-path "..\Call\vault\da_processare\riunione.mp4" `
   --keep-video
-
-# Forza il provider (default: claude)
-.\.venv\Scripts\python.exe scripts\process_call.py `
-  --input-path ".\da_processare\registrazione.m4a" `
-  --provider claude
-
-.\.venv\Scripts\python.exe scripts\process_call.py `
-  --input-path ".\da_processare\registrazione.m4a" `
-  --provider copilot
 
 # Soglia audio personalizzata
 .\.venv\Scripts\python.exe scripts\process_call.py `
-  --input-path ".\da_processare\registrazione.m4a" `
+  --input-path "..\Call\vault\da_processare\registrazione.m4a" `
   --archive-max-mb 25
 ```
 
@@ -90,8 +85,8 @@ Get-Content -Path ".\logs\watcher.log" -Wait -Tail 30
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\update_project_kanban.py `
-  --summary-path ".\completate\Task\Italgas - MCP Server\2026-05-21 12.03 - Titolo\Titolo.md" `
-  --task-directory ".\completate\Task\Italgas - MCP Server"
+  --summary-path "..\Call\vault\completate\Task\Italgas - MCP Server\2026-05-21 12.03 - Titolo\Titolo.md" `
+  --task-directory "..\Call\vault\completate\Task\Italgas - MCP Server"
 ```
 
 ### Aggiorna da tutte le call di una task
@@ -99,7 +94,7 @@ Get-Content -Path ".\logs\watcher.log" -Wait -Tail 30
 ```powershell
 .\.venv\Scripts\python.exe scripts\update_project_kanban.py `
   --all `
-  --task-directory ".\completate\Task\Italgas - MCP Server"
+  --task-directory "..\Call\vault\completate\Task\Italgas - MCP Server"
 ```
 
 ### Includi anche le call archiviate
@@ -107,26 +102,8 @@ Get-Content -Path ".\logs\watcher.log" -Wait -Tail 30
 ```powershell
 .\.venv\Scripts\python.exe scripts\update_project_kanban.py `
   --all --include-archive `
-  --task-directory ".\completate\Task\Italgas - MCP Server"
+  --task-directory "..\Call\vault\completate\Task\Italgas - MCP Server"
 ```
-
-### Forza il provider
-
-```powershell
-# Provider Claude Code (default)
-.\.venv\Scripts\python.exe scripts\update_project_kanban.py `
-  --all `
-  --task-directory ".\completate\Task\Italgas - MCP Server" `
-  --provider claude
-
-# Provider GitHub Copilot SDK
-.\.venv\Scripts\python.exe scripts\update_project_kanban.py `
-  --all `
-  --task-directory ".\completate\Task\Italgas - MCP Server" `
-  --provider copilot
-```
-
----
 
 ## Indici Obsidian
 
@@ -171,11 +148,11 @@ Se un retry trova gia' una trascrizione non vuota, salta la chiamata Groq Whispe
 ```powershell
 # Trascrivi un file audio senza processare tutta la pipeline
 .\.venv\Scripts\python.exe scripts\transcribe_with_groq.py `
-  --audio-path ".\da_processare\registrazione.m4a"
+  --audio-path "..\Call\vault\da_processare\registrazione.m4a"
 
 # Output in un path specifico
 .\.venv\Scripts\python.exe scripts\transcribe_with_groq.py `
-  --audio-path ".\da_processare\registrazione.m4a" `
+  --audio-path "..\Call\vault\da_processare\registrazione.m4a" `
   --output-path ".\trascrizione.txt"
 ```
 
@@ -185,7 +162,7 @@ Se un retry trova gia' una trascrizione non vuota, salta la chiamata Groq Whispe
 
 ```powershell
 # Leggi il log del watcher in tempo reale
-Get-Content -Path ".\logs\watcher.log" -Wait -Tail 30
+Get-Content -Path "..\Call\vault\logs\watcher.log" -Wait -Tail 30
 ```
 
 ---
@@ -196,20 +173,13 @@ Tutti i parametri si trovano in `scripts\settings.py`:
 
 | Parametro | Default | Descrizione |
 |---|---|---|
-| `ENABLED_PROVIDERS` | `["claude", "copilot"]` | Provider attivi (il primo è il default) |
 | `CLAUDE_SUMMARY_MODEL` | `claude-sonnet-4-6` | Modello Claude per il riassunto |
 | `CLAUDE_SUMMARY_EFFORT` | `medium` | Effort Claude per il riassunto |
 | `CLAUDE_TASK_MODEL` | `claude-sonnet-4-6` | Modello Claude per la classificazione task |
 | `CLAUDE_LIGHT_MODEL` | `claude-sonnet-4-6` | Modello Claude per il Kanban |
 | `CLAUDE_SUBAGENT_MODEL` | `claude-sonnet-4-6` | Modello subagent di audit |
 | `CLAUDE_SUBAGENT_EFFORT` | `medium` | Effort subagent di audit |
-| `COPILOT_SUMMARY_MODEL` | `gemini-3.1-pro-preview` | Modello riassunto principale (Copilot) |
-| `COPILOT_SUMMARY_FALLBACK_MODEL` | `gpt-5.4-mini` | Fallback riassunto Copilot |
-| `COPILOT_TASK_MODEL` | `gpt-5.4-mini` | Modello classificazione task (Copilot) |
-| `COPILOT_LIGHT_MODEL` | `gpt-5.4-mini` | Modello Kanban (Copilot) |
-| `COPILOT_AUDIT_MODEL` | `gpt-5.4-mini` | Modello audit riassunto (Copilot) |
-| `COPILOT_REASONING_EFFORT` | `medium` | Effort Copilot predefinito |
-| `COPILOT_SUMMARY_RETRIES` | `2` | Retry se il Markdown non valida |
+| `CLAUDE_SUMMARY_RETRIES` | `2` | Retry se il Markdown non valida |
 | `GROQ_WHISPER_MODEL` | `whisper-large-v3-turbo` | Modello trascrizione |
 | `ARCHIVE_MAX_MB` | `19.0` | Soglia compressione audio |
 | `ARCHIVE_DAYS` | `10` | Giorni prima dell'archiviazione |
