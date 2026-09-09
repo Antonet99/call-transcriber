@@ -86,6 +86,12 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return fields, body
 
 
+def strip_frontmatter(text: str) -> str:
+    """Restituisce il body Markdown senza il frontmatter iniziale, se presente."""
+    _, body_lines = _split_raw(text)
+    return "\n".join(body_lines).strip()
+
+
 def read_fields(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding=_UTF8)
     fields, _ = parse_frontmatter(text)

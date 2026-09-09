@@ -75,6 +75,7 @@ _INVALID_FNAME = set(r'\/:*?"<>|')
 _PERSON_SEGMENT = re.compile(r'^[\p{Lu}\p{Lt}][\w\'-]+$' if False else r"^[A-ZÁÀÈÉÌÍÎÓÒÙÚ][a-záàèéìíîóòùú'\-]+$")
 _ARCHIVE_DIR_NAME = "archivio"
 _ARCHIVED_TASKS_DIR_NAME = "progetti_archiviati"
+_UNASSIGNED_DIR_NAME = _cfg.UNASSIGNED_CALLS_DIR_NAME
 _TASK_CALLS_START = "<!-- TASK_CALLS:START -->"
 _TASK_CALLS_END = "<!-- TASK_CALLS:END -->"
 _TASK_CONTEXT_PLACEHOLDER = "<!-- Compila questa sezione con una breve descrizione del progetto, del suo obiettivo e dello stato attuale. -->"
@@ -138,9 +139,13 @@ def _call_dirs(project_dir: Path) -> list[Path]:
 
 def _active_task_dirs(task_root: Path) -> list[Path]:
     """Restituisce solo i progetti attivi direttamente sotto ``Task``."""
-    reserved = {_ARCHIVE_DIR_NAME, _ARCHIVED_TASKS_DIR_NAME}
+    reserved = {
+        _ARCHIVE_DIR_NAME.casefold(),
+        _ARCHIVED_TASKS_DIR_NAME.casefold(),
+        _UNASSIGNED_DIR_NAME.casefold(),
+    }
     return sorted(
-        [d for d in task_root.iterdir() if d.is_dir() and d.name not in reserved],
+        [d for d in task_root.iterdir() if d.is_dir() and d.name.casefold() not in reserved],
         key=lambda d: d.name,
     )
 
@@ -266,6 +271,15 @@ def set_task_frontmatter(summary_path: Path, task_name: str) -> None:
     fm.write_with_frontmatter(summary_path, ordered, body)
 
 
+def clear_task_frontmatter(summary_path: Path) -> None:
+    """Rimuove l'assegnazione task da una call senza progetto."""
+    fields, body = fm.parse_frontmatter(summary_path.read_text(encoding=_UTF8))
+    if "task" not in fields:
+        return
+    fields.pop("task", None)
+    fm.write_with_frontmatter(summary_path, fields, body)
+
+
 def _get_call_info(call_dir: Path, task_name: str, archived: bool = False) -> dict | None:
     parsed = _parse_dir_name(call_dir.name)
     if parsed is None:
@@ -280,7 +294,10 @@ def _get_call_info(call_dir: Path, task_name: str, archived: bool = False) -> di
         return None
 
     sync_people_frontmatter(summary_path, title)
-    set_task_frontmatter(summary_path, task_name)
+    if task_name:
+        set_task_frontmatter(summary_path, task_name)
+    else:
+        clear_task_frontmatter(summary_path)
 
     return {
         "task": task_name,
@@ -452,6 +469,7 @@ def rebuild(root: Path, archive_old: bool = False) -> dict:
         {"directory": task, "archived": True} for task in archived_tasks
     ]
     all_calls: list[dict] = []
+    unassigned_calls: list[dict] = []
 
     for task_record in task_records:
         task = task_record["directory"]
@@ -505,6 +523,43 @@ def rebuild(root: Path, archive_old: bool = False) -> dict:
             readme = task / "README.md"
             _render_task_readme(readme, task.name, people, tags, calls, archived_calls)
 
+    # Le call senza progetto restano fuori da ``Task`` e non hanno un README
+    # di progetto: vengono solo normalizzate e indicizzate globalmente.
+    unassigned_dir = completed_root / _UNASSIGNED_DIR_NAME
+    unassigned_recent_calls: list[dict] = []
+    unassigned_archived_calls: list[dict] = []
+    if unassigned_dir.exists():
+        unassigned_call_dirs = _call_dirs(unassigned_dir)
+        unassigned_call_dirs = [
+            _try_add_people_to_dir(d, unassigned_dir / "Kanban.md")
+            for d in unassigned_call_dirs
+        ]
+        unassigned_recent_calls = [
+            c for c in (
+                _get_call_info(d, "", archived=False)
+                for d in unassigned_call_dirs
+            ) if c
+        ]
+        archive_dir = unassigned_dir / _ARCHIVE_DIR_NAME
+        if archive_dir.exists():
+            unassigned_archived_dirs = _call_dirs(archive_dir)
+            unassigned_archived_dirs = [
+                _try_add_people_to_dir(d, unassigned_dir / "Kanban.md", archived=True)
+                for d in unassigned_archived_dirs
+            ]
+            unassigned_archived_calls = [
+                c for c in (
+                    _get_call_info(d, "", archived=True)
+                    for d in unassigned_archived_dirs
+                ) if c
+            ]
+        unassigned_calls = unassigned_recent_calls + unassigned_archived_calls
+        for call in unassigned_calls:
+            call["task_link_path"] = Path(_UNASSIGNED_DIR_NAME)
+        all_calls.extend(unassigned_calls)
+    else:
+        unassigned_calls = []
+
     # Global README. Il contenitore Task/progetti_archiviati non è un task:
     # i suoi figli sono i progetti archiviati da proporre nella classificazione.
     global_lines: list[str] = ["# Knowledge base call", "", "## Task attive"]
@@ -548,6 +603,19 @@ def rebuild(root: Path, archive_old: bool = False) -> dict:
     else:
         global_lines.append("- Nessuna task archiviata.")
 
+    global_lines += ["", f"## Call senza progetto ({len(unassigned_calls)})", ""]
+    if unassigned_calls:
+        for call in unassigned_calls:
+            sname = call["summary_path"].stem
+            call_base = Path(_UNASSIGNED_DIR_NAME)
+            if call["archived"]:
+                call_base /= _ARCHIVE_DIR_NAME
+            target = _to_wiki_path(str(call_base / call["directory"].name / sname))
+            alias = f"{call['date']} - {call['title']}" if call["date"] else call["title"]
+            global_lines.append(f"- [[{target}|{alias}]]")
+    else:
+        global_lines.append("- Nessuna call senza progetto.")
+
     global_lines += ["", f"## Ultime {_cfg.INDEX_LATEST_CALLS_COUNT} call"]
     latest = sorted(all_calls, key=lambda c: c["directory"].name, reverse=True)[:_cfg.INDEX_LATEST_CALLS_COUNT]
     if latest:
@@ -558,7 +626,8 @@ def rebuild(root: Path, archive_old: bool = False) -> dict:
                 call_base /= _ARCHIVE_DIR_NAME
             target = _to_wiki_path(str(call_base / call["directory"].name / sname))
             dt = f"{call['date']} {call['time']}" if call['date'] else call["directory"].name
-            global_lines.append(f"- {dt} - [[{target}|{call['title']}]] (task: {call['task']})")
+            task_label = call["task"] or _UNASSIGNED_DIR_NAME
+            global_lines.append(f"- {dt} - [[{target}|{call['title']}]] (task: {task_label})")
     else:
         global_lines.append("- Nessuna call presente.")
 
@@ -570,4 +639,5 @@ def rebuild(root: Path, archive_old: bool = False) -> dict:
         "calls": len(all_calls),
         "recent_calls": sum(1 for c in all_calls if not c["archived"]),
         "archived_calls": sum(1 for c in all_calls if c["archived"]),
+        "unassigned_calls": len(unassigned_calls),
     }

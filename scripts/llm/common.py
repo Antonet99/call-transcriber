@@ -5,6 +5,9 @@ import re
 from pathlib import Path
 
 import scripts.settings as _cfg
+from scripts.obsidian import frontmatter as _fm
+
+NO_TASK_TOKEN = "NESSUNA_TASK"
 
 
 # ---------------------------------------------------------------------------
@@ -65,20 +68,29 @@ def build_task_prompt(
     global_index: str = "",
     task_contexts: dict[str, str] | None = None,
     preliminary_task: str = "",
+    scoring_evidence: str = "",
 ) -> str:
-    task_list = "\n".join(f"- {t}" for t in task_names)
-    trimmed_summary = summary[:_cfg.TASK_PROMPT_SUMMARY_TRUNCATE]
+    task_list = "\n".join([*(f"- {t}" for t in task_names), f"- {NO_TASK_TOKEN}"])
+    trimmed_summary = _fm.strip_frontmatter(summary)[:_cfg.TASK_PROMPT_SUMMARY_TRUNCATE]
     trimmed_transcript = transcript[:_cfg.TASK_PROMPT_TRANSCRIPT_TRUNCATE]
     sections = [
-        "Devi assegnare una call a una delle task elencate, includendo anche le task archiviate.",
+        "Devi assegnare una call a una delle task elencate, includendo anche le task archiviate, "
+        f"oppure usare esattamente {NO_TASK_TOKEN} se la call non è collegata a nessun progetto.",
         "Usa il contenuto della trascrizione o del riassunto e l'indice globale.",
-        "Rispondi solo con il nome esatto di una task tra quelle elencate. "
-        "Non aggiungere spiegazioni, virgolette, markdown o testo extra.",
+        f"Rispondi solo con il nome esatto di una task tra quelle elencate oppure {NO_TASK_TOKEN}. "
+        "Usa quest'ultimo per discussioni tecniche generiche, confronti tra colleghi "
+        "e call senza un progetto riconoscibile. Non aggiungere spiegazioni, virgolette, "
+        "markdown o testo extra.",
         f"Task disponibili:\n{task_list}",
     ]
     if preliminary_task:
         sections.append(
             f"Assegnazione preliminare da verificare, non vincolante:\n{preliminary_task}"
+        )
+    if scoring_evidence:
+        sections.append(
+            "Evidenze dello scoring deterministico (supporto, non verità assoluta):\n"
+            f"{scoring_evidence}"
         )
     if global_index:
         sections.append(f"Indice globale delle task:\n{global_index}")
@@ -174,15 +186,25 @@ def validate_summary(text: str) -> None:
 # Task selection
 # ---------------------------------------------------------------------------
 
+def _clean_task_answer(answer: str) -> str:
+    clean = (answer or "").strip()
+    clean = re.sub(r"(?is)^```(?:text|markdown)?\s*", "", clean)
+    clean = re.sub(r"(?is)\s*```$", "", clean).strip()
+    return clean.strip('"`\'').strip()
+
+
+def is_no_task_answer(answer: str) -> bool:
+    """Riconosce la scelta semantica esplicita del contenitore senza progetto."""
+    return _clean_task_answer(answer).casefold() == NO_TASK_TOKEN.casefold()
+
+
 def select_task(task_dirs: list[Path], answer: str) -> Path | None:
-    clean = answer.strip().strip('"`\'')
-    clean = re.sub(r'(?i)^```(?:text|markdown)?\s*', '', clean)
-    clean = re.sub(r'(?i)\s*```$', '', clean).strip()
+    clean = _clean_task_answer(answer)
+
+    if not clean or is_no_task_answer(clean):
+        return None
 
     for d in task_dirs:
         if d.name.lower() == clean.lower():
-            return d
-    for d in task_dirs:
-        if clean.lower() in d.name.lower() or d.name.lower() in clean.lower():
             return d
     return None

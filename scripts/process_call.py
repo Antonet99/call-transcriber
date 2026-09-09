@@ -6,6 +6,7 @@ classifica, comprime, pulisce e rigenera gli indici.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import re
 import shutil
@@ -20,9 +21,11 @@ from scripts.llm import common as llm_common
 from scripts.llm.providers.claude import ClaudeProvider
 from scripts.obsidian import frontmatter as fm
 from scripts.obsidian import indexes as obs_indexes
+from scripts import task_scoring
 import scripts.settings as _cfg
 
 _con = _Console()
+_classification_logger = logging.getLogger(__name__)
 
 def _step(msg: str) -> None:
     _con.print(f"  [cyan]·[/cyan] {msg}")
@@ -33,6 +36,15 @@ def _ok(msg: str, elapsed: float = 0.0) -> None:
 
 def _warn(msg: str) -> None:
     _con.print(f"  [yellow]![/yellow] {msg}")
+
+
+def _classification_event(message: str, level: int = logging.INFO) -> None:
+    """Scrive gli eventi di classificazione sia in console sia nel log watcher."""
+    _classification_logger.log(level, "[classification] %s", message)
+    if level >= logging.WARNING:
+        _warn(message)
+    else:
+        print(f"[classification] {message}")
 
 _UTF8 = "utf-8"
 _AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".webm", ".wma"}
@@ -74,9 +86,22 @@ def _unique_path(path: Path) -> Path:
         idx += 1
 
 
-def _archive_processed_source(source_path: Path, root: Path, timestamp: datetime, keep_source: bool) -> Path | None:
+def _archive_processed_source(
+    source_path: Path,
+    root: Path,
+    timestamp: datetime,
+    keep_source: bool,
+    video_call_dir: Path | None = None,
+    video_name: str = "",
+) -> Path | None:
     if not source_path.exists():
         return None
+
+    if source_path.suffix.lower() in _VIDEO_EXT and video_call_dir is not None:
+        target = _unique_path(video_call_dir / f"{_safe_name(video_name)}{source_path.suffix.lower()}")
+        shutil.move(str(source_path), str(target))
+        os.utime(target, None)
+        return target
 
     archive_dir = root / "completate" / "archivio"
     archive_dir.mkdir(parents=True, exist_ok=True)
@@ -105,6 +130,10 @@ def _cleanup_source_archive(root: Path, days: int | None = None) -> int:
     deleted = 0
     for item in archive_dir.iterdir():
         if not item.is_file():
+            continue
+        # I video legacy non associati restano disponibili per una migrazione
+        # o una verifica manuale; i video nuovi non passano più da qui.
+        if item.suffix.lower() in _VIDEO_EXT:
             continue
         if datetime.fromtimestamp(item.stat().st_mtime) >= cutoff:
             continue
@@ -222,6 +251,10 @@ def _global_index_path(root: Path) -> Path:
     return root / "completate" / "README.md"
 
 
+def _unassigned_calls_dir(root: Path) -> Path:
+    return root / "completate" / _cfg.UNASSIGNED_CALLS_DIR_NAME
+
+
 def _project_instructions_path() -> Path:
     return Path(__file__).resolve().parent.parent / "README.md"
 
@@ -243,6 +276,17 @@ def _is_call_directory(path: Path) -> bool:
     return bool(re.match(r"^\d{4}-\d{2}-\d{2}\s+\d{2}\.\d{2}\s+-\s+", path.name))
 
 
+def _is_unassigned_subtree(path: Path, task_root: Path) -> bool:
+    try:
+        relative_parts = path.relative_to(task_root).parts
+    except ValueError:
+        return False
+    return any(
+        part.casefold() == _cfg.UNASSIGNED_CALLS_DIR_NAME.casefold()
+        for part in relative_parts
+    )
+
+
 def _discover_task_dirs(root: Path) -> list[Path]:
     """Trova task attive e archiviate, incluse eventuali task annidate."""
     task_root = root / "completate" / "Task"
@@ -252,7 +296,11 @@ def _discover_task_dirs(root: Path) -> list[Path]:
     candidates: set[Path] = set()
     for readme in task_root.rglob("README.md"):
         task_dir = readme.parent
-        if task_dir == task_root or _is_task_group(task_dir):
+        if (
+            task_dir == task_root
+            or _is_unassigned_subtree(task_dir, task_root)
+            or _is_task_group(task_dir)
+        ):
             continue
         if _is_call_directory(task_dir):
             continue
@@ -260,12 +308,17 @@ def _discover_task_dirs(root: Path) -> list[Path]:
 
     # Mantiene assegnabili anche task nuove il cui README non è ancora stato creato.
     for task_dir in task_root.iterdir():
-        if not task_dir.is_dir() or _is_task_group(task_dir):
+        if (
+            not task_dir.is_dir()
+            or _is_unassigned_subtree(task_dir, task_root)
+            or _is_task_group(task_dir)
+        ):
             continue
         candidates.add(task_dir)
         for nested in task_dir.iterdir():
             if (
                 nested.is_dir()
+                and not _is_unassigned_subtree(nested, task_root)
                 and (nested / "README.md").is_file()
                 and not _is_task_group(nested)
             ):
@@ -282,6 +335,11 @@ def _task_contexts(task_dirs: list[Path]) -> dict[str, str]:
     }
 
 
+def _log_task_scores(scores: list[task_scoring.TaskScore]) -> None:
+    for line in task_scoring.format_scores(scores).splitlines():
+        print(f"[task-score] {line}")
+
+
 def _recognize_task(
     root: Path,
     transcript: str,
@@ -292,17 +350,44 @@ def _recognize_task(
     if not task_dirs:
         return None
 
+    profiles = task_scoring.load_profiles(task_dirs)
+    scores = task_scoring.score_tasks(transcript, profiles)
+    _log_task_scores(scores)
+    automatic = task_scoring.automatic_winner(scores)
+    if automatic:
+        return automatic.profile.path
+
     global_index = _read_text(_global_index_path(root))
     prompt = llm_common.build_task_prompt(
         [task_dir.name for task_dir in task_dirs],
         transcript=transcript,
         global_index=global_index,
+        task_contexts=_task_contexts(task_dirs),
+        scoring_evidence=task_scoring.format_scores(scores),
     )
     try:
         answer = provider.invoke_task_classification(prompt, model or provider.default_task_model())
-        return llm_common.select_task(task_dirs, answer)
+        if llm_common.is_no_task_answer(answer):
+            _classification_event(
+                f"Scelta semantica: {llm_common.NO_TASK_TOKEN} (fase preliminare)."
+            )
+            return None
+        selected = llm_common.select_task(task_dirs, answer)
+        if selected:
+            return selected
+        _classification_event(
+            "Riconoscimento preliminare: output task non riconoscibile; "
+            "nessuna assegnazione preliminare, si procede alla classificazione finale.",
+            logging.WARNING,
+        )
+        return None
     except Exception as exc:
-        print(f"[warn] Riconoscimento preliminare task fallito: {exc}")
+        _classification_event(
+            "Riconoscimento preliminare task fallito; "
+            "nessuna assegnazione preliminare, si procede alla classificazione finale: "
+            f"{exc}",
+            logging.WARNING,
+        )
         return None
 
 
@@ -317,15 +402,37 @@ def _get_task_dir(
 ) -> Path:
     task_root = root / "completate" / "Task"
     if not task_root.exists():
-        return root / "completate"
+        unassigned_dir = _unassigned_calls_dir(root)
+        unassigned_dir.mkdir(parents=True, exist_ok=True)
+        _classification_event(
+            "Classificazione finale senza task disponibili; "
+            f"fallback sicuro in {unassigned_dir.name}.",
+            logging.WARNING,
+        )
+        return unassigned_dir
 
     tasks = _discover_task_dirs(root)
     if not tasks:
-        return task_root
+        unassigned_dir = _unassigned_calls_dir(root)
+        unassigned_dir.mkdir(parents=True, exist_ok=True)
+        _classification_event(
+            "Classificazione finale senza task disponibili; "
+            f"fallback sicuro in {unassigned_dir.name}.",
+            logging.WARNING,
+        )
+        return unassigned_dir
 
     summary = summary_path.read_text(encoding=_UTF8)
     global_index = _read_text(_global_index_path(root))
     task_names = [task.name for task in tasks]
+    profiles = task_scoring.load_profiles(tasks)
+    scoring_text = task_scoring.classification_text(title, summary, transcript)
+    scores = task_scoring.score_tasks(scoring_text, profiles)
+    _log_task_scores(scores)
+    automatic = task_scoring.automatic_winner(scores)
+    if automatic:
+        return automatic.profile.path
+
     prompt = llm_common.build_task_prompt(
         task_names,
         title,
@@ -334,17 +441,34 @@ def _get_task_dir(
         global_index=global_index,
         task_contexts=_task_contexts(tasks),
         preliminary_task=preliminary_task.name if preliminary_task else "",
+        scoring_evidence=task_scoring.format_scores(scores),
     )
     try:
         answer = provider.invoke_task_classification(prompt, model or provider.default_task_model())
+        if llm_common.is_no_task_answer(answer):
+            unassigned_dir = _unassigned_calls_dir(root)
+            unassigned_dir.mkdir(parents=True, exist_ok=True)
+            _classification_event(
+                f"Scelta semantica: {llm_common.NO_TASK_TOKEN} (fase finale)."
+            )
+            return unassigned_dir
         selected = llm_common.select_task(tasks, answer)
         if selected:
             return selected
+        _classification_event(
+            "Classificazione finale: output non riconoscibile; "
+            f"fallback sicuro in {_cfg.UNASSIGNED_CALLS_DIR_NAME}.",
+            logging.WARNING,
+        )
     except Exception as exc:
-        print(f"[warn] Classificazione task fallita: {exc}")
-    if preliminary_task in tasks:
-        return preliminary_task
-    return task_root
+        _classification_event(
+            "Classificazione finale task fallita; "
+            f"fallback sicuro in {_cfg.UNASSIGNED_CALLS_DIR_NAME}: {exc}",
+            logging.WARNING,
+        )
+    unassigned_dir = _unassigned_calls_dir(root)
+    unassigned_dir.mkdir(parents=True, exist_ok=True)
+    return unassigned_dir
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +643,11 @@ def process(
             transcript=transcript_text,
             preliminary_task=preliminary_task,
         )
-    task_name = task_dir.name if task_dir != root / "completate" / "Task" else ""
+    task_name = (
+        task_dir.name
+        if task_dir not in {root / "completate" / "Task", _unassigned_calls_dir(root)}
+        else ""
+    )
     _ok(f"Task: [bold]{task_dir.name}[/bold]", time.perf_counter() - t)
 
     final_call_dir = _unique_path(task_dir / final_call_name)
@@ -555,9 +683,14 @@ def process(
         root,
         timestamp,
         keep_source=(is_video and keep_video),
+        video_call_dir=call_dir if is_video else None,
+        video_name=summary_path.stem if is_video else "",
     )
     if source_archive_path:
-        _ok(f"Sorgente archiviato: {source_archive_path.name}")
+        if is_video:
+            _ok(f"Video salvato nella call: {source_archive_path.name}")
+        else:
+            _ok(f"Sorgente archiviato: {source_archive_path.name}")
 
     deleted_sources = _cleanup_source_archive(root)
     if deleted_sources:
@@ -577,9 +710,11 @@ def process(
     with _con.status("  Aggiornamento Kanban..."):
         try:
             from scripts.update_project_kanban import update_from_summary
-            if task_dir.exists():
+            if task_dir.exists() and task_dir != _unassigned_calls_dir(root):
                 update_from_summary(summary_path, task_dir)
-            kanban_ok = True
+                kanban_ok = True
+            else:
+                _step("Kanban non applicabile: call senza progetto")
         except Exception as exc:
             _warn(f"Kanban non aggiornata (non bloccante): {exc}")
     if kanban_ok:

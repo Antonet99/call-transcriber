@@ -21,17 +21,17 @@ MY_NAME: str = "Antonio Baio"
 # ---------------------------------------------------------------------------
 # Claude CLI  (effort: low | medium | high | xhigh | max)
 # ---------------------------------------------------------------------------
-CLAUDE_SUMMARY_MODEL: str = "claude-sonnet-4-6"
+CLAUDE_SUMMARY_MODEL: str = "claude-sonnet-5"
 CLAUDE_SUMMARY_EFFORT: str = "medium"
 
-CLAUDE_TASK_MODEL: str = "claude-sonnet-4-6"
+CLAUDE_TASK_MODEL: str = "claude-sonnet-5"
 CLAUDE_TASK_EFFORT: str = "medium"
 
-CLAUDE_LIGHT_MODEL: str = "claude-sonnet-4-6"
+CLAUDE_LIGHT_MODEL: str = "claude-sonnet-5"
 CLAUDE_LIGHT_EFFORT: str = "medium"
 
 # Subagent usati come revisori interni durante la generazione del riassunto
-CLAUDE_SUBAGENT_MODEL: str = "claude-sonnet-4-6"
+CLAUDE_SUBAGENT_MODEL: str = "claude-sonnet-5"
 CLAUDE_SUBAGENT_EFFORT: str = "medium"
 CLAUDE_SUMMARY_RETRIES: int = 2
 
@@ -46,14 +46,20 @@ TRANSCRIPTION_CHUNK_TARGET_MB: float = 18.0
 # Pipeline
 # ---------------------------------------------------------------------------
 ARCHIVE_MAX_MB: float = 19.0
-ARCHIVE_DAYS: int = 10
+ARCHIVE_DAYS: int = 15
 SOURCE_ARCHIVE_DAYS: int = 15
+UNASSIGNED_CALLS_DIR_NAME: str = "Senza progetto"
 
 # ---------------------------------------------------------------------------
 # LLM prompts
 # ---------------------------------------------------------------------------
 TASK_PROMPT_SUMMARY_TRUNCATE: int = 5000
 TASK_PROMPT_TRANSCRIPT_TRUNCATE: int = 12000
+# Scoring classificazione: una keyword forte vale piu' di un tag.
+TASK_KEYWORD_SCORE: int = 3
+TASK_TAG_SCORE: int = 1
+TASK_SCORE_MIN_TOTAL: int = 3
+TASK_SCORE_MIN_MARGIN: int = 3
 KANBAN_PROMPT_SUMMARY_TRUNCATE: int = 6000
 
 # ---------------------------------------------------------------------------

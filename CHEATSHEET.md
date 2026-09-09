@@ -66,10 +66,9 @@ Get-Content -Path "..\Call\vault\logs\watcher.log" -Wait -Tail 30
 .\.venv\Scripts\python.exe scripts\process_call.py `
   --input-path "..\Call\vault\da_processare\registrazione.m4a"
 
-# Mantieni il video anche nel path originale dopo la lavorazione
+# Il video viene conservato automaticamente nella cartella finale della call
 .\.venv\Scripts\python.exe scripts\process_call.py `
-  --input-path "..\Call\vault\da_processare\riunione.mp4" `
-  --keep-video
+  --input-path "..\Call\vault\da_processare\riunione.mp4"
 
 # Soglia audio personalizzata
 .\.venv\Scripts\python.exe scripts\process_call.py `
@@ -123,8 +122,7 @@ Get-Content -Path "..\Call\vault\logs\watcher.log" -Wait -Tail 30
 
 ## Archivio
 
-I file audio/video originali processati vengono salvati in `completate\archivio`.
-La pulizia automatica rimuove i sorgenti piu' vecchi di `SOURCE_ARCHIVE_DAYS`.
+I video vengono salvati nella cartella della call con il titolo del riassunto. Dopo 15 giorni la call viene archiviata e il video viene eliminato; riassunto, trascrizione e audio compresso restano disponibili. `completate\archivio` contiene solo eventuali sorgenti legacy non associati.
 
 ### Archivia manualmente le call vecchie (usa ARCHIVE_DAYS da settings.py)
 
@@ -173,15 +171,15 @@ Tutti i parametri si trovano in `scripts\settings.py`:
 
 | Parametro | Default | Descrizione |
 |---|---|---|
-| `CLAUDE_SUMMARY_MODEL` | `claude-sonnet-4-6` | Modello Claude per il riassunto |
+| `CLAUDE_SUMMARY_MODEL` | `claude-sonnet-5` | Modello Claude per il riassunto |
 | `CLAUDE_SUMMARY_EFFORT` | `medium` | Effort Claude per il riassunto |
-| `CLAUDE_TASK_MODEL` | `claude-sonnet-4-6` | Modello Claude per la classificazione task |
-| `CLAUDE_LIGHT_MODEL` | `claude-sonnet-4-6` | Modello Claude per il Kanban |
-| `CLAUDE_SUBAGENT_MODEL` | `claude-sonnet-4-6` | Modello subagent di audit |
+| `CLAUDE_TASK_MODEL` | `claude-sonnet-5` | Modello Claude per la classificazione task |
+| `CLAUDE_LIGHT_MODEL` | `claude-sonnet-5` | Modello Claude per il Kanban |
+| `CLAUDE_SUBAGENT_MODEL` | `claude-sonnet-5` | Modello subagent di audit |
 | `CLAUDE_SUBAGENT_EFFORT` | `medium` | Effort subagent di audit |
 | `CLAUDE_SUMMARY_RETRIES` | `2` | Retry se il Markdown non valida |
 | `GROQ_WHISPER_MODEL` | `whisper-large-v3-turbo` | Modello trascrizione |
 | `ARCHIVE_MAX_MB` | `19.0` | Soglia compressione audio |
-| `ARCHIVE_DAYS` | `10` | Giorni prima dell'archiviazione |
-| `SOURCE_ARCHIVE_DAYS` | `15` | Giorni prima di eliminare i sorgenti audio/video archiviati |
+| `ARCHIVE_DAYS` | `15` | Giorni prima dell'archiviazione e della rimozione del video |
+| `SOURCE_ARCHIVE_DAYS` | `15` | Soglia di pulizia dei sorgenti audio legacy nell'archivio generale |
 | `KANBAN_MAX_CARDS_PER_CALL` | `4` | Max card per call |
