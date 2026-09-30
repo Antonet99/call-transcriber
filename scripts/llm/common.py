@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import re
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 import scripts.settings as _cfg
 from scripts.obsidian import frontmatter as _fm
@@ -113,7 +117,9 @@ def build_task_prompt(
 
 
 def build_kanban_prompt(summary: str, kanban_content: str, call_wikilink: str, call_label: str) -> str:
-    trimmed = summary[:_cfg.KANBAN_PROMPT_SUMMARY_TRUNCATE]
+    # Le action item possono essere in coda al riassunto: non tagliare il
+    # contesto prima di estrarle.
+    trimmed = summary
     return (
         "Leggi il riassunto di questa call e la Kanban di progetto.\n\n"
         "Estrai le MACRO-ATTIVITA' da fare che emergono dalla call. "
@@ -138,22 +144,43 @@ def build_kanban_prompt(summary: str, kanban_content: str, call_wikilink: str, c
 # Post-processing output LLM
 # ---------------------------------------------------------------------------
 
+_OPERATIONAL_OUTPUT_RE = re.compile(
+    r"(?i)\bin attesa di approvazione\b|\bapprovazione per scrivere\b|\bscrivere il file\b"
+)
+_SUMMARY_TITLE_RE = re.compile(r"(?m)^#\s+riassunto\s*$")
+_SUMMARY_CONTEXT_RE = re.compile(r"(?m)^##\s+\S")
+_SUMMARY_DETAIL_RE = re.compile(r"(?m)^###\s+\S")
+_TAG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _unwrap_markdown_wrapper(text: str) -> str:
+    """Rimuove un solo fence esterno, lasciando intatti i fence interni."""
+    lines = text.strip().splitlines()
+    if len(lines) < 3:
+        return text.strip()
+    if not re.fullmatch(r"```(?:md|markdown)?\s*", lines[0].strip(), re.IGNORECASE):
+        return text.strip()
+    if lines[-1].strip() != "```":
+        return text.strip()
+    return "\n".join(lines[1:-1]).strip()
+
+
 def clean_markdown(text: str) -> str:
-    clean = text.strip()
-
-    m = re.search(r'(?ms)```(?:md|markdown)?\s*(.*?)```', clean)
-    if m:
-        clean = m.group(1).strip()
-
-    lines = [
-        ln for ln in clean.splitlines()
-        if not ln.strip().startswith("```")
-        and ln.strip() != "Leggo la trascrizione e produco il riassunto."
-    ]
+    clean = _unwrap_markdown_wrapper(text)
+    lines: list[str] = []
+    in_fence = False
+    for line in clean.splitlines():
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            lines.append(line)
+            continue
+        if not in_fence and line.strip() == "Leggo la trascrizione e produco il riassunto.":
+            continue
+        lines.append(line)
     clean = "\n".join(lines).strip()
 
     fm_match = re.search(r'(?ms)^---\s*$.*?^---\s*$\s*^#\s+riassunto\s*$', clean)
-    if fm_match and fm_match.start() > 0:
+    if fm_match:
         clean = clean[fm_match.start():].strip()
     else:
         h_match = re.search(r'(?m)^#\s+riassunto\s*$', clean)
@@ -163,22 +190,86 @@ def clean_markdown(text: str) -> str:
     return clean
 
 
-def validate_summary(text: str) -> None:
-    if re.search(r'(?i)in attesa di approvazione|approvazione per scrivere|scrivere il file', text):
+def _text_outside_clean_summary(text: str, clean: str) -> str:
+    if not clean:
+        return text
+
+    start = text.find(clean)
+    if start < 0:
+        unwrapped = _unwrap_markdown_wrapper(text)
+        start = unwrapped.find(clean)
+        if start >= 0:
+            text = unwrapped
+    if start < 0:
+        # If the wrapper was cleaned together with a preamble, the heading is
+        # still a reliable boundary for detecting operational text before it.
+        heading = text.find("# riassunto")
+        return text[:heading] if heading >= 0 else text
+
+    end = start + len(clean)
+    return f"{text[:start]}\n{text[end:]}"
+
+
+def _frontmatter_and_body(clean: str) -> tuple[dict[str, Any], str]:
+    lines = clean.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ValueError("Il riassunto deve iniziare con un frontmatter YAML.")
+
+    try:
+        end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
+    except StopIteration as exc:
+        raise ValueError("Il frontmatter YAML non e' chiuso correttamente.") from exc
+
+    yaml_text = "\n".join(lines[1:end]).strip()
+    try:
+        fields = yaml.safe_load(yaml_text) if yaml_text else {}
+    except yaml.YAMLError as exc:
+        raise ValueError("Il frontmatter YAML non e' valido.") from exc
+    if not isinstance(fields, dict):
+        raise ValueError("Il frontmatter YAML deve contenere una mappa di metadati.")
+    return dict(fields), "\n".join(lines[end + 1 :]).strip()
+
+
+def _validate_metadata(fields: dict[str, Any]) -> None:
+    for key in ("persone", "sistemi", "tags"):
+        if key not in fields:
+            continue
+        value = fields[key]
+        if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+            raise ValueError(f"Il campo frontmatter '{key}' deve essere una lista di stringhe non vuote.")
+
+    tags = fields.get("tags")
+    if not isinstance(tags, list) or "call" not in {item.casefold() for item in tags if isinstance(item, str)}:
+        raise ValueError("Il frontmatter deve contenere il tag 'call'.")
+    if any(not _TAG_RE.fullmatch(item) for item in tags):
+        raise ValueError("I tag del frontmatter devono essere in kebab-case minuscolo.")
+
+    for key in ("data", "ora", "task", "archived_at"):
+        if key in fields and fields[key] is not None and not isinstance(fields[key], (str, date, datetime)):
+            raise ValueError(f"Il campo frontmatter '{key}' deve essere scalare.")
+    if "archived" in fields and not isinstance(fields["archived"], bool):
+        raise ValueError("Il campo frontmatter 'archived' deve essere booleano.")
+
+
+def validate_summary(text: str, *, raw_text: str | None = None) -> None:
+    clean = clean_markdown(text)
+    source = raw_text if raw_text is not None else text
+    external_text = _text_outside_clean_summary(source, clean)
+    if _OPERATIONAL_OUTPUT_RE.search(external_text):
         raise ValueError("Il provider LLM ha restituito una richiesta operativa invece del riassunto.")
 
-    lines = text.splitlines()
-    first_nonempty = next((i for i, l in enumerate(lines) if l.strip()), None)
-    if first_nonempty is not None and lines[first_nonempty].strip() == "---":
-        closed = any(lines[j].strip() == "---" for j in range(first_nonempty + 1, len(lines)))
-        if not closed:
-            raise ValueError("Il frontmatter YAML non e' chiuso correttamente.")
+    fields, body = _frontmatter_and_body(clean)
+    _validate_metadata(fields)
 
-    if not re.search(r'(?m)^#\s+riassunto\s*$', text):
+    title_match = _SUMMARY_TITLE_RE.search(body)
+    if not title_match:
         raise ValueError("Il riassunto non contiene il titolo principale richiesto.")
-    if not re.search(r'(?m)^##\s+\S', text):
+    if len(_SUMMARY_TITLE_RE.findall(body)) != 1 or not body.lstrip().startswith("# riassunto"):
+        raise ValueError("La struttura del riassunto deve iniziare con un unico titolo principale.")
+    context_match = _SUMMARY_CONTEXT_RE.search(body, title_match.end())
+    if not context_match:
         raise ValueError("Il riassunto non contiene il sottotitolo contestuale richiesto.")
-    if not re.search(r'(?m)^###\s+\S', text):
+    if not _SUMMARY_DETAIL_RE.search(body, context_match.end()):
         raise ValueError("Il riassunto non contiene sezioni di dettaglio.")
 
 

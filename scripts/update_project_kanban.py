@@ -7,7 +7,7 @@ from pathlib import Path
 
 import scripts.settings as _cfg
 from scripts.llm import common as llm_common
-from scripts.llm.providers.claude import ClaudeProvider
+from scripts.llm.providers import get_provider
 from scripts.obsidian import kanban
 
 _CARD_RE = re.compile(r'^\-\s+\[\s*\]')
@@ -20,23 +20,27 @@ def update_from_summary(
     task_dir: Path,
     model: str = "",
 ) -> int:
-    provider = ClaudeProvider()
+    provider = get_provider()
     if not provider.is_available():
-        print("[kanban] Claude CLI non disponibile, skip.")
-        return 0
+        raise RuntimeError("Claude CLI non disponibile: Kanban lasciata invariata.")
 
     kanban_path = task_dir / "Kanban.md"
     if not kanban_path.exists():
         kanban.create(kanban_path, task_dir.name)
         print(f"[kanban] Creata: {kanban_path}")
+    if not kanban.has_ideas_section(kanban_path):
+        raise ValueError(f"La Kanban non contiene la sezione 'Idee da call': {kanban_path}")
 
     summary = summary_path.read_text(encoding=_UTF8)
     kanban_content = kanban_path.read_text(encoding=_UTF8)
     existing_cards = kanban.get_all_cards(kanban_path)
 
-    summary_dir_name = summary_path.parent.name
     summary_base = summary_path.stem
-    call_wiki = f"{summary_dir_name}/{summary_base}"
+    try:
+        relative_summary = summary_path.relative_to(task_dir).with_suffix("")
+    except ValueError as exc:
+        raise ValueError(f"Il riassunto non appartiene alla task: {summary_path}") from exc
+    call_wiki = relative_summary.as_posix()
     call_label = re.sub(r'^\d{4}-\d{2}-\d{2}\s+\d{2}\.\d{2}\s+-\s+', '', summary_base)
     if not call_label:
         call_label = summary_base
@@ -44,7 +48,9 @@ def update_from_summary(
     prompt = llm_common.build_kanban_prompt(summary, kanban_content, call_wiki, call_label)
     answer = provider.invoke_light(prompt, model).strip()
 
-    if not answer or answer.upper() == "NONE":
+    if not answer:
+        raise ValueError(f"{summary_base}: risposta LLM vuota.")
+    if answer.upper() == "NONE":
         print(f"[kanban] {summary_base}: nessuna card nuova.")
         return 0
 
@@ -54,16 +60,16 @@ def update_from_summary(
     ][:_cfg.KANBAN_MAX_CARDS_PER_CALL]
 
     if not new_cards:
-        print(f"[kanban] {summary_base}: risposta LLM non nel formato atteso.")
-        return 0
+        raise ValueError(f"{summary_base}: risposta LLM non nel formato atteso.")
 
+    existing_ids = {_card_identity(card) for card in existing_cards}
     filtered = []
     for card in new_cards:
-        card_lower = card.lower()
-        if not any(card_lower[:_cfg.KANBAN_DEDUP_LENGTH] in e.lower() for e in existing_cards):
-            filtered.append(card)
-        # aggiorna existing_cards in-place per evitare duplicati tra call dello stesso batch
-        existing_cards.append(card)
+        identity = _card_identity(card)
+        if not identity or identity in existing_ids:
+            continue
+        filtered.append(card)
+        existing_ids.add(identity)
 
     if not filtered:
         print(f"[kanban] {summary_base}: card già presenti, skip.")
@@ -72,6 +78,15 @@ def update_from_summary(
     added = kanban.update(kanban_path, filtered)
     print(f"[kanban] {summary_base}: {added} card aggiunte.")
     return added
+
+
+def _card_identity(card: str) -> str:
+    """Compare the activity text independently of status, tags and sources."""
+    value = re.sub(r"^\s*-\s*\[[ xX]\]\s*", "", card).strip()
+    value = re.sub(r"\[\[[^\]]+\]\]", " ", value)
+    value = re.sub(r"(?<!\w)#[\w-]+", " ", value)
+    value = re.sub(r"[^\w\s]", " ", value, flags=re.UNICODE)
+    return " ".join(value.casefold().split())
 
 
 def update_all(

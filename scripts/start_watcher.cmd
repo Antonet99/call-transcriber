@@ -8,4 +8,6 @@ set "PYTHONIOENCODING=utf-8"
 if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
 pushd "%ROOT_DIR%"
 "%PYTHON_EXE%" "%SCRIPT_DIR%watch_calls.py" %*
+set "EXIT_CODE=%ERRORLEVEL%"
 popd
+exit /b %EXIT_CODE%

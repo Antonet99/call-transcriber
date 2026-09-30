@@ -38,3 +38,5 @@ _chunks/
 # Documenti di contesto non tracciati
 LLM_CONTEXT.md
 PYTHON_MACOS_PORTING_CONTEXT.md
+
+.pipeline/

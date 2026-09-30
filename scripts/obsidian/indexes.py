@@ -8,14 +8,18 @@ import re
 from pathlib import Path
 
 import scripts.settings as _cfg
+from scripts.filesystem import atomic_write_text, safe_name
 from scripts.obsidian import frontmatter as fm
+
+try:
+    from scripts.tasks import discover_task_dirs, is_archived_task, task_labels
+except ImportError:  # Backward-compatible while the shared discovery helper is deployed.
+    discover_task_dirs = is_archived_task = task_labels = None
 
 
 def _people_for_title(fields: dict) -> list[str]:
     """Primi due partecipanti (primo nome, esclude MY_NAME) da usare nel titolo."""
-    raw = fields.get("persone", [])
-    if isinstance(raw, str):
-        raw = [raw] if raw else []
+    raw = fm.normalise_string_list(fields.get("persone", []))
     my_parts = {p.lower() for p in _cfg.MY_NAME.split()} if _cfg.MY_NAME else set()
     result: list[str] = []
     for p in raw:
@@ -29,6 +33,8 @@ def _people_for_title(fields: dict) -> list[str]:
 
 def _try_add_people_to_dir(call_dir: Path, kanban_path: Path, archived: bool = False) -> Path:
     """Rinomina la cartella aggiungendo i partecipanti al titolo, se assenti."""
+    if (call_dir / ".call-job.json").exists():
+        return call_dir
     parsed = _parse_dir_name(call_dir.name)
     if not parsed:
         return call_dir
@@ -38,7 +44,9 @@ def _try_add_people_to_dir(call_dir: Path, kanban_path: Path, archived: bool = F
     if not candidates:
         return call_dir
 
-    people = _people_for_title(fm.read_fields(candidates[0]))
+    summary_source = candidates[0]
+    old_summary_stem = summary_source.stem
+    people = _people_for_title(fm.read_fields(summary_source))
     if not people:
         return call_dir
 
@@ -51,7 +59,7 @@ def _try_add_people_to_dir(call_dir: Path, kanban_path: Path, archived: bool = F
 
     new_title = f"{', '.join(missing)}, {title}"
     time_compact = time_str.replace(":", ".")
-    new_name = _safe_name(f"{date_str} {time_compact} - {new_title}")
+    new_name = safe_name(f"{date_str} {time_compact} - {new_title}")
     new_dir = call_dir.parent / new_name
 
     if new_dir == call_dir or new_dir.exists():
@@ -59,13 +67,21 @@ def _try_add_people_to_dir(call_dir: Path, kanban_path: Path, archived: bool = F
 
     call_dir.rename(new_dir)
 
+    new_summary_stem = safe_name(new_title)
+    new_summary = new_dir / f"{new_summary_stem}.md"
+    moved_summary = new_dir / summary_source.name
+    if moved_summary != new_summary and not new_summary.exists():
+        moved_summary.rename(new_summary)
+    new_summary_stem = new_summary.stem if new_summary.exists() else old_summary_stem
+
     if kanban_path.exists():
         content = kanban_path.read_text(encoding=_UTF8)
-        old_link = f"[[archivio/{call_dir.name}/" if archived else f"[[{call_dir.name}/"
-        new_link = f"[[archivio/{new_name}/" if archived else f"[[{new_name}/"
+        archive_prefix = "archivio/" if archived else ""
+        old_link = f"[[{archive_prefix}{call_dir.name}/{old_summary_stem}"
+        new_link = f"[[{archive_prefix}{new_name}/{new_summary_stem}"
         updated = content.replace(old_link, new_link)
         if updated != content:
-            kanban_path.write_text(updated, encoding=_UTF8)
+            atomic_write_text(kanban_path, updated, encoding=_UTF8)
 
     return new_dir
 
@@ -87,8 +103,7 @@ _GENERIC_HEADINGS = {
 
 
 def _safe_name(name: str) -> str:
-    safe = "".join('-' if c in _INVALID_FNAME else c for c in name)
-    return re.sub(r'\s+', ' ', safe).strip()
+    return safe_name(name)
 
 
 def _to_wiki_path(path: str) -> str:
@@ -164,6 +179,31 @@ def _archived_task_dirs(task_root: Path) -> list[Path]:
     )
 
 
+def _task_records(root: Path, task_root: Path) -> list[dict]:
+    """Return discovered tasks with stable relative paths and display labels."""
+    if discover_task_dirs is not None:
+        directories = list(discover_task_dirs(root))
+        labels = task_labels(directories) if task_labels is not None else {}
+        return [
+            {
+                "directory": directory,
+                "archived": bool(is_archived_task(directory)) if is_archived_task else False,
+                "label": labels.get(directory, directory.name),
+            }
+            for directory in sorted(directories, key=lambda path: str(path).casefold())
+        ]
+
+    active = _active_task_dirs(task_root)
+    archived = _archived_task_dirs(task_root)
+    return [
+        {"directory": task, "archived": False, "label": task.name}
+        for task in active
+    ] + [
+        {"directory": task, "archived": True, "label": task.name}
+        for task in archived
+    ]
+
+
 def _short_title(title: str) -> str:
     clean = re.sub(r'[#*_`]', '', title).strip()
     words = clean.split()
@@ -190,13 +230,8 @@ def _is_person_segment(value: str) -> bool:
 
 
 def _people_from_title(title: str) -> list[str]:
-    m = re.match(r'^([^,]+),\s*.+$', title)
-    if not m:
-        return []
-    prefix = m.group(1).strip()
-    if not _is_person_segment(prefix):
-        return []
-    return [p.strip() for p in re.split(r'\s+(?:e|and)\s+|[&/]', prefix) if p.strip()]
+    """Titles are labels; they are never a source of people metadata."""
+    return []
 
 
 def _summary_title_from_body(body: str) -> str:
@@ -226,26 +261,18 @@ def sync_summary_file(call_dir: Path, title: str) -> Path | None:
         return None
     target = call_dir / (_safe_name(title) + ".md")
     if src != target:
+        if (call_dir / ".call-job.json").exists():
+            return src
         src.rename(target)
     return target
 
 
 def sync_people_frontmatter(summary_path: Path, title: str) -> None:
-    people_from_title = _people_from_title(title)
-    if not people_from_title:
-        return
-
     fields, body = fm.parse_frontmatter(summary_path.read_text(encoding=_UTF8))
-    existing_people = fields.get("persone", [])
-    if isinstance(existing_people, str):
-        existing_people = [existing_people] if existing_people else []
-    existing_tags = fields.get("tags", [])
-    if isinstance(existing_tags, str):
-        existing_tags = [existing_tags] if existing_tags else []
-
-    people = list(dict.fromkeys(existing_people + people_from_title))
-    tags = list(dict.fromkeys(existing_tags + ["call"] + [_to_kebab(p) for p in people_from_title]))
-
+    people = fm.normalise_string_list(fields.get("persone", []))
+    tags = fm.normalise_string_list(fields.get("tags", []))
+    if "call" not in tags:
+        tags.append("call")
     fields["persone"] = people
     fields["tags"] = tags
     fm.write_with_frontmatter(summary_path, fields, body)
@@ -358,6 +385,15 @@ def _section_name(heading: str) -> str:
     return re.sub(r"\s+", " ", heading[3:].strip()).lower()
 
 
+def _is_legacy_generated_section(name: str) -> bool:
+    """Recognise only the historical generated call headings.
+
+    A heading such as ``Call con fornitori`` is user content and must survive
+    migration.
+    """
+    return bool(re.fullmatch(r"call (?:recenti|archiviate)(?: \(\d+\))?", name))
+
+
 def _render_task_readme(
     readme: Path,
     task_name: str,
@@ -383,7 +419,7 @@ def _render_task_readme(
             prefix += "\n"
         if suffix and not suffix.startswith("\n"):
             suffix = "\n" + suffix
-        readme.write_text(prefix + call_block + suffix, encoding=_UTF8)
+        atomic_write_text(readme, prefix + call_block + suffix, encoding=_UTF8)
         return
 
     # Migrazione dei README legacy: le vecchie liste Call/Archivio sono
@@ -413,7 +449,7 @@ def _render_task_readme(
             people_section = (heading, body)
         elif name == "tag":
             tags_section = (heading, body)
-        elif name.startswith("call") or name in generated_names:
+        elif _is_legacy_generated_section(name) or name in generated_names:
             if name == "riepilogo":
                 for line in body.splitlines():
                     if line.strip() and not re.match(r"^\s*-\s*(Persone|Tag):", line, re.IGNORECASE):
@@ -422,6 +458,8 @@ def _render_task_readme(
             preserved.append((heading, body))
 
     lines = [title, ""]
+    if intro and context_section:
+        lines += [intro, ""]
     if context_section:
         lines += [context_section[0], "", context_section[1], ""]
     else:
@@ -448,7 +486,7 @@ def _render_task_readme(
         lines += [heading, "", body, ""]
 
     lines += [call_block]
-    readme.write_text("\n".join(lines).rstrip() + "\n", encoding=_UTF8)
+    atomic_write_text(readme, "\n".join(lines).rstrip() + "\n", encoding=_UTF8)
 
 
 def rebuild(root: Path, archive_old: bool = False) -> dict:
@@ -461,24 +499,22 @@ def rebuild(root: Path, archive_old: bool = False) -> dict:
     completed_root.mkdir(parents=True, exist_ok=True)
     task_root.mkdir(parents=True, exist_ok=True)
 
-    active_tasks = _active_task_dirs(task_root)
-    archived_tasks = _archived_task_dirs(task_root)
-    task_records = [
-        {"directory": task, "archived": False} for task in active_tasks
-    ] + [
-        {"directory": task, "archived": True} for task in archived_tasks
-    ]
+    task_records = _task_records(root, task_root)
+    active_tasks = [record["directory"] for record in task_records if not record["archived"]]
+    archived_tasks = [record["directory"] for record in task_records if record["archived"]]
     all_calls: list[dict] = []
     unassigned_calls: list[dict] = []
 
     for task_record in task_records:
         task = task_record["directory"]
         task_is_archived = task_record["archived"]
+        task_label = task_record["label"]
+        task_link_path = task.relative_to(completed_root)
         kanban_path = task / "Kanban.md"
         call_dirs = _call_dirs(task)
         call_dirs = [_try_add_people_to_dir(d, kanban_path) for d in call_dirs]
         calls = [
-            c for c in (_get_call_info(d, task.name, archived=False) for d in call_dirs)
+            c for c in (_get_call_info(d, task_label, archived=False) for d in call_dirs)
             if c
         ]
 
@@ -488,17 +524,13 @@ def rebuild(root: Path, archive_old: bool = False) -> dict:
             archived_dirs = _call_dirs(archive_dir)
             archived_dirs = [_try_add_people_to_dir(d, kanban_path, archived=True) for d in archived_dirs]
             archived_calls = [
-                c for c in (_get_call_info(d, task.name, archived=True) for d in archived_dirs)
+                c for c in (_get_call_info(d, task_label, archived=True) for d in archived_dirs)
                 if c
             ]
 
         all_calls.extend(calls)
         all_calls.extend(archived_calls)
 
-        if task_is_archived:
-            task_link_path = Path("Task") / _ARCHIVED_TASKS_DIR_NAME / task.name
-        else:
-            task_link_path = Path("Task") / task.name
         for call in calls + archived_calls:
             call["task_link_path"] = task_link_path
 
@@ -564,18 +596,21 @@ def rebuild(root: Path, archive_old: bool = False) -> dict:
     # i suoi figli sono i progetti archiviati da proporre nella classificazione.
     global_lines: list[str] = ["# Knowledge base call", "", "## Task attive"]
     if active_tasks:
-        for task in active_tasks:
+        for task_record in (record for record in task_records if not record["archived"]):
+            task = task_record["directory"]
+            task_label = task_record["label"]
+            task_link_path = task.relative_to(completed_root)
             recent_count = sum(
                 1 for c in all_calls
-                if c["task"] == task.name and c["task_link_path"] == Path("Task") / task.name
+                if c["task"] == task_label and c["task_link_path"] == task_link_path
                 and not c["archived"]
             )
             archived_count = sum(
                 1 for c in all_calls
-                if c["task"] == task.name and c["task_link_path"] == Path("Task") / task.name
+                if c["task"] == task_label and c["task_link_path"] == task_link_path
                 and c["archived"]
             )
-            target = _to_wiki_path(str(Path("Task") / task.name / "README"))
+            target = _to_wiki_path(str(task_link_path / "README"))
             global_lines.append(
                 f"- [[{target}|{task.name}]] - ({recent_count} call recenti, {archived_count} archiviate)"
             )
@@ -584,16 +619,18 @@ def rebuild(root: Path, archive_old: bool = False) -> dict:
 
     global_lines += ["", "## Task archiviate"]
     if archived_tasks:
-        for task in archived_tasks:
-            task_path = Path("Task") / _ARCHIVED_TASKS_DIR_NAME / task.name
+        for task_record in (record for record in task_records if record["archived"]):
+            task = task_record["directory"]
+            task_label = task_record["label"]
+            task_path = task.relative_to(completed_root)
             recent_count = sum(
                 1 for c in all_calls
-                if c["task"] == task.name and c["task_link_path"] == task_path
+                if c["task"] == task_label and c["task_link_path"] == task_path
                 and not c["archived"]
             )
             archived_count = sum(
                 1 for c in all_calls
-                if c["task"] == task.name and c["task_link_path"] == task_path
+                if c["task"] == task_label and c["task_link_path"] == task_path
                 and c["archived"]
             )
             target = _to_wiki_path(str(task_path / "README"))
@@ -631,7 +668,7 @@ def rebuild(root: Path, archive_old: bool = False) -> dict:
     else:
         global_lines.append("- Nessuna call presente.")
 
-    (completed_root / "README.md").write_text("\n".join(global_lines) + "\n", encoding=_UTF8)
+    atomic_write_text(completed_root / "README.md", "\n".join(global_lines) + "\n", encoding=_UTF8)
 
     return {
         "global_index": str(completed_root / "README.md"),

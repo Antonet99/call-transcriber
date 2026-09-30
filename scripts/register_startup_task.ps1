@@ -13,15 +13,11 @@ param(
 $rootDir = Split-Path -Parent $PSScriptRoot
 $venvPython = Join-Path $rootDir '.venv\Scripts\python.exe'
 $watchLauncher = Join-Path $PSScriptRoot 'start_watcher.cmd'
-$logDir = Join-Path $rootDir 'logs'
-$logFile = Join-Path $logDir 'watcher.log'
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
     Write-Error "Python venv non trovato: $venvPython. Eseguire prima: python -m venv .venv && .venv\Scripts\pip install -e ."
     exit 1
 }
-
-New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 foreach ($legacyTaskName in $LegacyTaskNames) {
     if ($legacyTaskName -eq $TaskName) {
@@ -62,7 +58,7 @@ Register-ScheduledTask `
     -Force | Out-Null
 
 Write-Host "Task '$TaskName' registrato. Il watcher si avviera' automaticamente al prossimo login."
-Write-Host "Log: $logFile"
+Write-Host "Log: VAULT_ROOT\logs\watcher.log (VAULT_ROOT è impostato da .env)"
 Write-Host ""
 Write-Host "Comandi utili:"
 Write-Host "  Avvia subito:   Start-ScheduledTask -TaskName '$TaskName'"

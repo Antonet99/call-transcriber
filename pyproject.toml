@@ -5,12 +5,13 @@ requires-python = ">=3.11"
 dependencies = [
     "groq",
     "watchdog",
-    "python-frontmatter",
-    "typer",
     "pyyaml",
     "python-dotenv",
     "rich",
 ]
+
+[project.optional-dependencies]
+anthropic = ["anthropic"]
 
 [project.scripts]
 process-call    = "scripts.process_call:main"
@@ -25,3 +26,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["scripts*"]
+
+[tool.setuptools.package-data]
+scripts = ["*.md"]

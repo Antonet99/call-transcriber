@@ -10,6 +10,10 @@ class LlmProvider(ABC):
     @abstractmethod
     def default_task_model(self) -> str: ...
 
+    def default_light_model(self) -> str:
+        """Modello predefinito per le chiamate leggere (es. Kanban)."""
+        return self.default_task_model()
+
     @abstractmethod
     def is_available(self) -> bool: ...
 

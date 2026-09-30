@@ -7,17 +7,40 @@ import shutil
 from pathlib import Path
 
 import scripts.settings as _cfg
+from scripts.filesystem import safe_name
+
+try:
+    from scripts.tasks import discover_task_dirs
+except ImportError:
+    discover_task_dirs = None
 
 _CALL_PREFIX = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}\.\d{2})\s+-\s+")
 _VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
 
 
 def _safe_name(name: str) -> str:
-    invalid = set(r'\/:*?"<>|')
-    return re.sub(r"\s+", " ", "".join("-" if c in invalid else c for c in name)).strip()
+    return safe_name(name)
 
 
 def _call_dirs(root: Path) -> list[Path]:
+    if discover_task_dirs is not None:
+        result: list[Path] = []
+        containers = [
+            container
+            for task in discover_task_dirs(root)
+            for container in (task, task / "archivio")
+        ]
+        unassigned = root / "completate" / _cfg.UNASSIGNED_CALLS_DIR_NAME
+        containers.extend((unassigned, unassigned / "archivio"))
+        for container in containers:
+            if not container.is_dir():
+                continue
+            result.extend(
+                directory for directory in container.iterdir()
+                if directory.is_dir() and _CALL_PREFIX.match(directory.name)
+            )
+        return sorted(set(result), key=lambda path: str(path).casefold())
+
     completed = root / "completate"
     containers = [completed / "Task", completed / _cfg.UNASSIGNED_CALLS_DIR_NAME]
     return sorted(

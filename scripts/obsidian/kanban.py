@@ -8,9 +8,10 @@ import re
 from pathlib import Path
 
 import scripts.settings as _cfg
+from scripts.filesystem import atomic_write_text
 
 _UTF8 = "utf-8"
-_CARD_RE = re.compile(r'^\-\s+\[\s*\]')
+_CARD_RE = re.compile(r'^\-\s+\[[ xX]\]')
 _SETTINGS_RE = re.compile(r'^%%\s*kanban:settings')
 _SECTION_RE = re.compile(r'^##\s+')
 _IDEE_RE = re.compile(r'^##\s+Idee da call\s*$')
@@ -49,7 +50,7 @@ def create(path: Path, task_name: str) -> None:
         "```",
         "%%",
     ]
-    path.write_text("\n".join(lines) + "\n", encoding=_UTF8)
+    atomic_write_text(path, "\n".join(lines) + "\n", encoding=_UTF8)
 
 
 def get_all_cards(path: Path) -> list[str]:
@@ -57,6 +58,12 @@ def get_all_cards(path: Path) -> list[str]:
         return []
     lines = path.read_text(encoding=_UTF8).splitlines()
     return [ln.strip() for ln in lines if _CARD_RE.match(ln.strip())]
+
+
+def has_ideas_section(path: Path) -> bool:
+    if not path.exists():
+        return False
+    return any(_IDEE_RE.match(line) for line in path.read_text(encoding=_UTF8).splitlines())
 
 
 def update(path: Path, new_cards: list[str]) -> int:
@@ -75,7 +82,7 @@ def update(path: Path, new_cards: list[str]) -> int:
         (i for i, ln in enumerate(lines) if _IDEE_RE.match(ln)), -1
     )
     if idee_start < 0:
-        return 0
+        raise ValueError("La Kanban non contiene la sezione 'Idee da call'.")
 
     section_end = settings_start
     for i in range(idee_start + 1, settings_start):
@@ -93,5 +100,5 @@ def update(path: Path, new_cards: list[str]) -> int:
     before = lines[: insert_after + 1]
     after = lines[insert_after + 1 :]
     new_lines = before + new_cards + after
-    path.write_text("\n".join(new_lines) + "\n", encoding=_UTF8)
+    atomic_write_text(path, "\n".join(new_lines) + "\n", encoding=_UTF8)
     return len(new_cards)

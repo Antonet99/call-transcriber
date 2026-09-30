@@ -13,7 +13,15 @@ from datetime import date, datetime
 from pathlib import Path
 
 import scripts.settings as _cfg
+from scripts.filesystem import atomic_write_text
 from scripts.obsidian import frontmatter as fm
+
+try:
+    from scripts.jobs import pending_call_dirs
+    from scripts.tasks import discover_task_dirs
+except ImportError:
+    pending_call_dirs = None
+    discover_task_dirs = None
 
 _DATE_PATTERN = re.compile(r'^(\d{4}-\d{2}-\d{2})\s+\d{2}\.\d{2}\s+-\s+')
 _UTF8 = "utf-8"
@@ -40,7 +48,7 @@ def _update_kanban_links(kanban_path: Path, call_dir_name: str) -> None:
     if not re.search(pattern, content):
         return
     updated = re.sub(pattern, replacement, content)
-    kanban_path.write_text(updated, encoding=_UTF8)
+    atomic_write_text(kanban_path, updated, encoding=_UTF8)
 
 
 def _remove_video_recordings(call_dir: Path) -> int:
@@ -52,13 +60,23 @@ def _remove_video_recordings(call_dir: Path) -> int:
     return deleted
 
 
-def _cleanup_archived_videos(root: Path, days: int) -> int:
+def _is_excluded(path: Path, excluded_call_dirs: set[Path]) -> bool:
+    resolved = path.resolve()
+    return any(resolved == excluded or excluded in resolved.parents for excluded in excluded_call_dirs)
+
+
+def _cleanup_archived_videos(
+    root: Path,
+    days: int,
+    excluded_call_dirs: set[Path] | None = None,
+) -> int:
     if days <= 0:
         return 0
     completed_root = root / "completate"
     containers = [completed_root / "Task", completed_root / _cfg.UNASSIGNED_CALLS_DIR_NAME]
     cutoff = date.today()
     deleted = 0
+    excluded = {path.resolve() for path in (excluded_call_dirs or set())}
     call_dirs = {
         call_dir
         for container in containers
@@ -67,6 +85,7 @@ def _cleanup_archived_videos(root: Path, days: int) -> int:
         if call_dir.is_dir()
         and _DATE_PATTERN.match(call_dir.name)
         and any(part.casefold() == "archivio" for part in call_dir.relative_to(container).parts)
+        and not _is_excluded(call_dir, excluded)
     }
     for call_dir in call_dirs:
         call_date = _parse_call_date(call_dir.name)
@@ -82,14 +101,19 @@ def _archive_direct_calls(
     label: str,
     days: int,
     kanban_path: Path | None = None,
+    excluded_call_dirs: set[Path] | None = None,
 ) -> tuple[int, int, int]:
     cutoff = date.today()
     archived = 0
     skipped = 0
     videos_deleted = 0
+    excluded = {path.resolve() for path in (excluded_call_dirs or set())}
     call_dirs = [
         d for d in container.iterdir()
-        if d.is_dir() and d.name.casefold() != "archivio" and _DATE_PATTERN.match(d.name)
+        if d.is_dir()
+        and d.name.casefold() != "archivio"
+        and _DATE_PATTERN.match(d.name)
+        and not _is_excluded(d, excluded)
     ]
 
     for call_dir in sorted(call_dirs):
@@ -103,13 +127,18 @@ def _archive_direct_calls(
             skipped += 1
             continue
 
-        videos_deleted += _remove_video_recordings(call_dir)
         archive_dir.mkdir(parents=True, exist_ok=True)
-        call_dir.rename(dest)
+        try:
+            call_dir.rename(dest)
+        except OSError:
+            skipped += 1
+            continue
 
         for md in dest.glob("*.md"):
             if md.name != "README.md":
                 fm.add_archived_fields(md)
+
+        videos_deleted += _remove_video_recordings(dest)
 
         if kanban_path is not None:
             _update_kanban_links(kanban_path, call_dir.name)
@@ -119,9 +148,18 @@ def _archive_direct_calls(
     return archived, skipped, videos_deleted
 
 
-def archive(root: Path, days: int | None = None) -> dict[str, int]:
+def archive(
+    root: Path,
+    days: int | None = None,
+    excluded_call_dirs: set[Path] | None = None,
+) -> dict[str, int]:
     if days is None:
         days = _cfg.ARCHIVE_DAYS
+    if days < 1:
+        raise ValueError("days deve essere almeno 1")
+    excluded = {path.resolve() for path in (excluded_call_dirs or set())}
+    if pending_call_dirs is not None:
+        excluded.update(path.resolve() for path in pending_call_dirs(root))
     completed_root = root / "completate"
     task_root = completed_root / "Task"
     archived = 0
@@ -129,27 +167,31 @@ def archive(root: Path, days: int | None = None) -> dict[str, int]:
     videos_deleted = 0
 
     if task_root.exists():
-        active_tasks = [
-            d for d in task_root.iterdir()
-            if d.is_dir()
-            and d.name.casefold() not in {
-                _cfg.UNASSIGNED_CALLS_DIR_NAME.casefold(),
-                "progetti_archiviati",
-            }
-        ]
-        archived_tasks_root = task_root / "progetti_archiviati"
-        archived_tasks = (
-            [d for d in archived_tasks_root.iterdir() if d.is_dir()]
-            if archived_tasks_root.exists()
-            else []
-        )
-        for task_dir in sorted(active_tasks + archived_tasks):
+        task_dirs = list(discover_task_dirs(root)) if discover_task_dirs is not None else []
+        if not task_dirs:
+            active_tasks = [
+                d for d in task_root.iterdir()
+                if d.is_dir()
+                and d.name.casefold() not in {
+                    _cfg.UNASSIGNED_CALLS_DIR_NAME.casefold(),
+                    "progetti_archiviati",
+                }
+            ]
+            archived_tasks_root = task_root / "progetti_archiviati"
+            archived_tasks = (
+                [d for d in archived_tasks_root.iterdir() if d.is_dir()]
+                if archived_tasks_root.exists()
+                else []
+            )
+            task_dirs = active_tasks + archived_tasks
+        for task_dir in sorted(task_dirs):
             moved, ignored, deleted = _archive_direct_calls(
                 task_dir,
                 task_dir / "archivio",
                 task_dir.name,
                 days,
                 task_dir / "Kanban.md",
+                excluded,
             )
             archived += moved
             skipped += ignored
@@ -162,12 +204,13 @@ def archive(root: Path, days: int | None = None) -> dict[str, int]:
             unassigned_dir / "archivio",
             unassigned_dir.name,
             days,
+            excluded_call_dirs=excluded,
         )
         archived += moved
         skipped += ignored
         videos_deleted += deleted
 
-    videos_deleted += _cleanup_archived_videos(root, days)
+    videos_deleted += _cleanup_archived_videos(root, days, excluded)
     return {"archived": archived, "skipped": skipped, "videos_deleted": videos_deleted}
 
 

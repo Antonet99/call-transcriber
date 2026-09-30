@@ -6,7 +6,8 @@ from pathlib import Path as _Path
 
 from dotenv import load_dotenv as _load_dotenv
 
-_load_dotenv(_Path(__file__).parent.parent / ".env", override=True)
+if _os.environ.get("CALL_PIPELINE_NO_DOTENV") != "1":
+    _load_dotenv(_Path(__file__).parent.parent / ".env", override=True)
 
 # Root del vault Obsidian (completate/, da_processare/, .obsidian/).
 # In sviluppo locale (repo unificato) coincide con la root del codice.
@@ -73,3 +74,8 @@ INDEX_LATEST_CALLS_COUNT: int = 10
 # ---------------------------------------------------------------------------
 KANBAN_MAX_CARDS_PER_CALL: int = 4
 KANBAN_DEDUP_LENGTH: int = 60
+
+# Processing checkpoints and controlled service calls.
+LLM_PROVIDER: str = _os.environ.get("LLM_PROVIDER", "claude")
+STABLE_TIMEOUT_SECONDS: float = 120.0
+LLM_RETRY_DELAY_SECONDS: float = 2.0

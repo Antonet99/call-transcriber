@@ -12,8 +12,22 @@ from typing import Any
 
 import yaml
 
+from scripts.filesystem import atomic_write_text
+
 _UTF8 = "utf-8"
 _SEP = "---"
+
+
+class _FrontmatterDumper(yaml.SafeDumper):
+    """Safe PyYAML dumper with compact, valid inline lists."""
+
+    def represent_list(self, data: list[Any]) -> yaml.nodes.SequenceNode:
+        node = super().represent_list(data)
+        node.flow_style = True
+        return node
+
+
+_FrontmatterDumper.add_representer(list, _FrontmatterDumper.represent_list)
 
 
 # ---------------------------------------------------------------------------
@@ -102,24 +116,38 @@ def read_fields(path: Path) -> dict[str, Any]:
 # Scrittura
 # ---------------------------------------------------------------------------
 
+
+def _write_if_changed(path: Path, content: str) -> None:
+    try:
+        if path.read_text(encoding=_UTF8) == content:
+            return
+    except FileNotFoundError:
+        pass
+    atomic_write_text(path, content, encoding=_UTF8)
+
+
 def _fmt_value(val: Any) -> str:
-    if isinstance(val, list):
-        return "[" + ", ".join(str(v) for v in val) + "]"
-    if isinstance(val, bool):
-        return "true" if val else "false"
-    if isinstance(val, date):
-        return val.isoformat()
-    s = str(val)
-    if "[[" in s or ":" in s or s.startswith('"'):
-        if not (s.startswith('"') and s.endswith('"')):
-            s = f'"{s}"'
-    return s
+    return yaml.dump(
+        val,
+        Dumper=_FrontmatterDumper,
+        allow_unicode=True,
+        default_flow_style=isinstance(val, list),
+        sort_keys=False,
+    ).strip()
 
 
 def render_frontmatter(fields: dict[str, Any], body: str) -> str:
     lines = [_SEP]
-    for k, v in fields.items():
-        lines.append(f"{k}: {_fmt_value(v)}")
+    if fields:
+        rendered = yaml.dump(
+            dict(fields),
+            Dumper=_FrontmatterDumper,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False,
+            width=120,
+        ).rstrip()
+        lines.extend(rendered.splitlines())
     lines.append(_SEP)
     body_stripped = body.lstrip("\n")
     if body_stripped:
@@ -129,7 +157,7 @@ def render_frontmatter(fields: dict[str, Any], body: str) -> str:
 
 def write_with_frontmatter(path: Path, fields: dict[str, Any], body: str) -> None:
     content = render_frontmatter(fields, body)
-    path.write_text(content, encoding=_UTF8)
+    _write_if_changed(path, content)
 
 
 # ---------------------------------------------------------------------------
@@ -139,65 +167,43 @@ def write_with_frontmatter(path: Path, fields: dict[str, Any], body: str) -> Non
 def update_field(path: Path, key: str, value: Any) -> None:
     """Aggiorna o aggiunge un singolo campo senza riscrivere il body."""
     text = path.read_text(encoding=_UTF8)
-    fm_lines, body_lines = _split_raw(text)
-
-    if not fm_lines:
-        new_content = f"{_SEP}\n{key}: {_fmt_value(value)}\n{_SEP}\n\n" + "\n".join(body_lines)
-        path.write_text(new_content, encoding=_UTF8)
-        return
-
-    new_line = f"{key}: {_fmt_value(value)}"
-    pattern = re.compile(r'^' + re.escape(key) + r'\s*:')
-    replaced = False
-    new_fm: list[str] = []
-    for line in fm_lines:
-        if pattern.match(line):
-            new_fm.append(new_line)
-            replaced = True
-        else:
-            new_fm.append(line)
-
-    if not replaced:
-        new_fm.insert(-1, new_line)
-
-    body = "\n".join(body_lines)
-    path.write_text("\n".join(new_fm) + "\n" + ("\n" + body.lstrip("\n") if body.strip() else ""), encoding=_UTF8)
+    fields, body = parse_frontmatter(text)
+    fields[key] = value
+    write_with_frontmatter(path, fields, body)
 
 
 def add_archived_fields(path: Path, archived_at: date | None = None) -> None:
     """Aggiunge archived: true e archived_at al frontmatter se assenti."""
     text = path.read_text(encoding=_UTF8)
-    fm_lines, body_lines = _split_raw(text)
-    at_str = (archived_at or date.today()).isoformat()
-
-    if not fm_lines:
-        new_content = (
-            f"{_SEP}\narchived: true\narchived_at: {at_str}\n{_SEP}\n\n"
-            + "\n".join(body_lines)
-        )
-        path.write_text(new_content, encoding=_UTF8)
+    fields, body = parse_frontmatter(text)
+    if fields.get("archived") is True and fields.get("archived_at"):
         return
+    fields["archived"] = True
+    fields.setdefault("archived_at", archived_at or date.today())
+    write_with_frontmatter(path, fields, body)
 
-    for line in fm_lines:
-        if re.match(r'^\s*archived\s*:', line):
-            return  # già archiviato
 
-    new_fm = fm_lines[:-1] + [f"archived: true", f"archived_at: {at_str}", fm_lines[-1]]
-    body = "\n".join(body_lines)
-    path.write_text(
-        "\n".join(new_fm) + "\n" + ("\n" + body.lstrip("\n") if body.strip() else ""),
-        encoding=_UTF8,
-    )
+def normalise_string_list(value: Any) -> list[str]:
+    """Normalise malformed list metadata without raising during a rebuild."""
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        values = []
+    result: list[str] = []
+    for item in values:
+        if not isinstance(item, str):
+            continue
+        item = item.strip()
+        if item and item not in result:
+            result.append(item)
+    return result
 
 
 def get_people(path: Path) -> list[str]:
     fields = read_fields(path)
-    val = fields.get("persone", [])
-    if isinstance(val, list):
-        return [v for v in val if v]
-    if val:
-        return [val]
-    return []
+    return normalise_string_list(fields.get("persone", []))
 
 
 def ensure_kebab_tag(tags: list[str], new_tag: str) -> list[str]:

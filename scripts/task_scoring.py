@@ -123,16 +123,19 @@ class TaskScore:
     score: int
     keyword_matches: tuple[str, ...] = ()
     tag_matches: tuple[str, ...] = ()
+    negated_keywords: tuple[str, ...] = ()
 
     @property
     def strong_keyword_matched(self) -> bool:
-        return bool(self.keyword_matches)
+        return bool(self.keyword_matches) and not self.negated_keywords
 
     @property
     def evidence(self) -> str:
         parts: list[str] = []
         if self.keyword_matches:
             parts.append("keyword=" + ", ".join(self.keyword_matches))
+        if self.negated_keywords:
+            parts.append("esclusione=" + ", ".join(self.negated_keywords))
         if self.tag_matches:
             parts.append("tag=" + ", ".join(self.tag_matches))
         return "; ".join(parts) if parts else "nessuna evidenza"
@@ -141,11 +144,19 @@ class TaskScore:
 def score_tasks(text: str, profiles: list[TaskProfile]) -> list[TaskScore]:
     """Calcola score per ogni task, ordinando per score e poi per nome."""
     scores: list[TaskScore] = []
+    normalized = f" {normalize(text)} "
+    sentences = [normalize(sentence) for sentence in re.split(r"[.!?;\n]", text)]
     for profile in profiles:
+        def matches(term):
+            return f" {normalize(term)} " in normalized
+        negated = tuple(keyword for keyword in profile.keywords if any(
+            re.search(r"\b(?:non|not|nessun|esclud\w*)\b(?:\s+\w+){0,6}\s+" +
+                      re.escape(normalize(keyword)) + r"(?:\s|$)", sentence)
+            for sentence in sentences))
         keyword_matches = tuple(
-            keyword for keyword in profile.keywords if phrase_matches(text, keyword)
+            keyword for keyword in profile.keywords if matches(keyword)
         )
-        tag_matches = tuple(tag for tag in profile.tags if phrase_matches(text, tag))
+        tag_matches = tuple(tag for tag in profile.tags if matches(tag))
         score = (
             len(keyword_matches) * _cfg.TASK_KEYWORD_SCORE
             + len(tag_matches) * _cfg.TASK_TAG_SCORE
@@ -156,6 +167,7 @@ def score_tasks(text: str, profiles: list[TaskProfile]) -> list[TaskScore]:
                 score=score,
                 keyword_matches=keyword_matches,
                 tag_matches=tag_matches,
+                negated_keywords=negated,
             )
         )
     return sorted(scores, key=lambda item: (-item.score, item.profile.name.casefold()))
