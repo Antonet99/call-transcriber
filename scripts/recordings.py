@@ -557,7 +557,8 @@ def _valid_trash_item(directory: Path, trash_root: Path) -> tuple[Path | None, d
     return (recording if recording.exists() else None, metadata)
 
 
-def cleanup_trash(root: Path, days: int = 30, now: float | None = None) -> int:
+def cleanup_trash(root: Path, days: int = 30, now: float | None = None,
+                  excluded_dirs: set[Path] | None = None) -> int:
     """Remove expired, verified trash recordings and their own metadata files."""
     if days <= 0:
         return 0
@@ -580,8 +581,11 @@ def cleanup_trash(root: Path, days: int = 30, now: float | None = None) -> int:
 
     cutoff_seconds = days * 24 * 60 * 60
     deleted = 0
+    excluded = {path.resolve() for path in (excluded_dirs or set())}
     for directory in entries:
         try:
+            if directory.resolve() in excluded:
+                continue
             validated = _valid_trash_item(directory, trash_root)
             if validated is None:
                 continue

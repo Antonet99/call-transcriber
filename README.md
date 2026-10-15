@@ -131,26 +131,38 @@ Unregister-ScheduledTask -TaskName 'CallWatcher' -Confirm:$false  # rimuovi
 
 ### Menu e coda delle registrazioni
 
-Il pannello `Nuova call` mostra il nome del file selezionato e il numero delle registrazioni in attesa. Il terminale usa una schermata che si aggiorna sul posto: menu, coda e progressi sostituiscono la vista precedente, mantenendo lo stile ciano. L'esito dell'ultima operazione resta visibile in forma compatta. Basta premere il tasto dell'opzione; Esc torna al menu durante gli inserimenti senza richiedere Invio.
+Il terminale usa una schermata che si aggiorna sul posto mantenendo lo stile ciano. Le righe selezionabili sono evidenziate; gli elenchi lunghi scorrono con la selezione. L'esito dell'ultima operazione resta visibile in forma compatta.
 
 | Tasto | Azione |
 |---|---|
-| `1` | Avvia la pipeline completa con Groq e Claude. |
-| `2` | Chiede titolo e progetto, poi salva soltanto la registrazione originale e una scheda Markdown locale. |
-| `3` | Sposta subito la registrazione in `VAULT_ROOT/cestino_registrazioni/<id>/`, senza una seconda conferma. |
-| `Q` | Mostra l'intera coda; inserire un numero per scegliere una registrazione pronta. |
-| `R` | Riprende un'operazione interrotta conservando la scelta e la destinazione precedenti. |
-| `Ctrl+C` | Ferma il watcher e conserva la coda. |
+| `↑` / `↓` | Sposta la selezione. |
+| `Invio` | Conferma l'elemento selezionato o il testo visibile. |
+| `Esc` | Torna alla schermata precedente. |
+| `Q` | Apre la coda dei nuovi arrivi dalla schermata principale. |
+| `N` | Apre le registrazioni non elaborate dalla schermata principale. |
+| `Ctrl+C` | Ferma il watcher conservando coda e decisioni. |
 
-Invio vuoto, input non valido e attesa non avviano azioni. La coda procede per ordine di disponibilità; i file preesistenti sono rilevati in ordine cronologico. Gli eventi duplicati dello stesso file non producono altre voci. Un file in scrittura non blocca gli altri: il watcher verifica dimensione, timestamp e, su Windows, disponibilità del file rispetto agli accessi in scrittura.
+Per una nuova call selezionare `Trascrivi e riassumi`, `Salva solo registrazione` oppure `Scarta`, poi premere Invio. Lo scarto sposta subito il file nel cestino per 30 giorni, senza ulteriori conferme. Nei menu non occorre digitare numeri; l'input libero serve soltanto per modificare il titolo, proposto già compilato. Invio non torna indietro: negli elenchi vuoti non esegue alcuna azione, mentre Esc chiude la vista.
 
-Mentre una pipeline è in corso, restano visibili i progressi attuali. Le nuove registrazioni continuano a essere rilevate; il menu ritorna alla conclusione. I tasti premuti durante l'elaborazione vengono scartati. Il comando diretto `process_call.py` resta invece un avvio esplicito della pipeline completa.
+La coda procede per ordine di disponibilità; i file preesistenti sono rilevati in ordine cronologico. Gli eventi duplicati dello stesso file non producono altre voci. Un file in scrittura non blocca gli altri: il watcher verifica dimensione, timestamp e, su Windows, disponibilità del file rispetto agli accessi in scrittura. La vista della coda aggiorna le voci quando diventano disponibili.
 
-Stato, ordine e scelte sono conservati in `.pipeline/watcher-state.json`, con copia `.json.bak`. Al riavvio i file presenti vengono ricontrollati; le operazioni interrotte richiedono `R`, senza ripartenze automatiche delle chiamate ai provider. Una decisione viene salvata prima di iniziare l'operazione. Gli errori tornano nel menu con stato recuperabile e dettagli nel log. Se il journal principale è illeggibile viene usata la copia di sicurezza; se entrambe le copie sono illeggibili il watcher si ferma senza sovrascriverle o muovere registrazioni. I checkpoint storici della pipeline vengono proposti per ripresa manuale.
+Mentre una pipeline è in corso restano visibili i progressi attuali. Le nuove registrazioni continuano a essere rilevate; il menu ritorna alla conclusione. I tasti premuti durante l'elaborazione vengono scartati. Il comando diretto `process_call.py` resta invece un avvio esplicito della pipeline completa.
+
+Stato, ordine e scelte sono conservati in `.pipeline/watcher-state.json`, con copia `.json.bak`. Al riavvio i file presenti vengono ricontrollati; per le operazioni interrotte selezionare `Riprendi l'operazione già scelta` e confermare con Invio. Nessuna ripartenza automatica delle chiamate ai provider. Una decisione viene salvata prima di iniziare l'operazione. Gli errori tornano nel menu con stato recuperabile e dettagli nel log. Se il journal principale è illeggibile viene usata la copia di sicurezza; se entrambe le copie sono illeggibili il watcher si ferma senza sovrascriverle o muovere registrazioni.
+
+### Registrazioni non elaborate
+
+Premendo `N` si apre direttamente un unico elenco, diviso nelle sezioni `Salvate nelle cartelle` e `Nel cestino`. Selezionare una registrazione con le frecce e premere Invio per aprire i dettagli, poi confermare l'azione `Trascrivi e riassumi` o `Riprendi elaborazione`. Esc torna all'elenco e poi alla schermata principale. Aprire le viste non avvia provider, trascrizioni o elaborazioni.
+
+Compaiono soltanto registrazioni riconosciute dai metadati del programma, con l'originale disponibile e senza una pipeline completa già conclusa. Sono incluse le cartelle archiviate quando l'originale esiste ancora. Una lavorazione interrotta resta disponibile per la ripresa dai checkpoint anche quando il file è già stato trasferito nella destinazione finale. I file mancanti senza checkpoint recuperabile e gli elementi già elaborati vengono esclusi.
+
+Per le registrazioni salvate vengono mantenuti cartella, titolo e progetto scelti manualmente. Gli output sono preparati nell'area temporanea della pipeline; la scheda viene sostituita dal riassunto e vengono aggiunti trascrizione e audio compresso. L'originale resta nella cartella. Per il cestino la pipeline ricava titolo e progetto come nel flusso completo, trasferendo la registrazione nella cartella della call. Un elemento scompare dall'elenco solo al completamento dell'intero processo.
+
+Le scadenze restano quelle esistenti: video salvati eliminati all'archiviazione dopo 15 giorni, cestino ripulito dopo 30 giorni. Se l'originale è già stato eliminato non è possibile trascriverlo dalla sola scheda. Le registrazioni con elaborazione avviata e interrotta vengono protette dalla pulizia finché serve riprenderle.
 
 ### Salvataggio della sola registrazione
 
-Il titolo suggerito è il nome originale del file. Il progetto viene scelto manualmente da un elenco di progetti attivi, oppure `0` per `Senza progetto`; `Esc` torna al menu. La struttura resta quella delle altre call:
+Il titolo è proposto già compilato con il nome originale del file. Il progetto viene scelto con le frecce da un elenco di progetti attivi, che include `Senza progetto`. Invio conferma; Esc torna alla modifica del titolo e da lì al menu. La struttura resta quella delle altre call:
 
 ```text
 completate/Task/<progetto>/YYYY-MM-DD HH.mm - Titolo/
@@ -165,7 +177,7 @@ Si applica la stessa archiviazione delle altre call: dopo `ARCHIVE_DAYS` (15 gio
 
 ### Cestino delle registrazioni
 
-La scelta `3` autorizza lo spostamento immediato nel cestino e la cancellazione automatica dopo 30 giorni dalla data di scarto, registrata nei metadati. La manutenzione verifica i metadati e l'identità del file prima di eliminarlo. File estranei, collegamenti simbolici o metadati corrotti non vengono cancellati. La pulizia avviene all'avvio interattivo e periodicamente mentre il watcher è attivo; se è spento viene differita al successivo avvio.
+La conferma di `Scarta` autorizza lo spostamento immediato nel cestino e la cancellazione automatica dopo 30 giorni dalla data di scarto, registrata nei metadati. La manutenzione verifica i metadati e l'identità del file prima di eliminarlo. File estranei, collegamenti simbolici o metadati corrotti non vengono cancellati. La pulizia avviene all'avvio interattivo e periodicamente mentre il watcher è attivo; se è spento viene differita al successivo avvio.
 
 Per recuperare una registrazione prima della scadenza, fermare il watcher e spostare l'originale dalla sua sottocartella del cestino a `da_processare` con un nome libero. Il percorso originale è riportato in `metadata.json`. Al riavvio verrà rilevata come una registrazione da scegliere.
 
@@ -255,7 +267,7 @@ tags: [call, italgas, mcp-server]
 1. Il file viene copiato in `VAULT_ROOT\da_processare\`.
 2. Il watcher rileva il file.
 3. Attesa finche' il file è disponibile e dimensione e timestamp sono stabili; la registrazione entra nella coda persistente del menu.
-4. Dopo la scelta `1`, `ffmpeg` estrae o converte l'audio in `audio.m4a`. Le scelte `2` e `3` seguono i flussi locali descritti sopra.
+4. Dopo la conferma di `Trascrivi e riassumi`, `ffmpeg` estrae o converte l'audio in `audio.m4a`. Le azioni `Salva solo registrazione` e `Scarta` seguono i flussi locali descritti sopra.
 5. Se `trascrizione.txt` esiste gia' nella cartella della call, viene riusata; altrimenti Groq Whisper la produce con chunking automatico per file grandi.
 6. La pipeline riconosce preliminarmente la task usando `completate/README.md` e i README disponibili.
 7. Claude genera il riassunto usando prompt, README root, indice globale e README task preliminare.

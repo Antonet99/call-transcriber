@@ -12,6 +12,7 @@ import math
 import os
 import re
 import shutil
+import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -455,6 +456,390 @@ def _invoke_summary(
     raise last_error or RuntimeError("Generazione riassunto fallita.")
 
 
+_RECORDING_ID = re.compile(r"^[0-9a-f]{24}$")
+_RECORDING_HASH = re.compile(r"^[0-9a-f]{64}$")
+_CALL_DIRECTORY = re.compile(r"^\d{4}-\d{2}-\d{2}\s+\d{2}\.\d{2}\s+-\s+(.+)$")
+
+
+def _context_path(root: Path, value: object, label: str) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Percorso {label} del contesto registrazione mancante.")
+    path = Path(os.path.abspath(value))
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"Il percorso {label} è fuori dalla root.") from exc
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"Il percorso {label} contiene un collegamento simbolico.")
+    if path.resolve(strict=False) != path:
+        raise ValueError(f"Il percorso {label} non è canonico.")
+    return path
+
+
+def _read_recording_json(path: Path, label: str) -> dict:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} mancante o non valido.")
+    try:
+        value = json.loads(path.read_text(encoding=_UTF8))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} non leggibile.") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} non valido.")
+    return value
+
+
+def _validate_recording_context(root: Path, input_path: Path, context: dict) -> dict:
+    if not isinstance(context, dict):
+        raise ValueError("Il contesto registrazione non è valido.")
+    recording_id = context.get("recording_id")
+    file_hash = context.get("sha256")
+    category = context.get("category")
+    timestamp = context.get("timestamp")
+    if not isinstance(recording_id, str) or not _RECORDING_ID.fullmatch(recording_id):
+        raise ValueError("recording_id deve contenere 24 caratteri esadecimali minuscoli.")
+    if not isinstance(file_hash, str) or not _RECORDING_HASH.fullmatch(file_hash):
+        raise ValueError("sha256 del contesto registrazione non valido.")
+    if category not in {"saved", "trash"}:
+        raise ValueError("La categoria registrazione deve essere saved o trash.")
+    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
+        raise ValueError("Timestamp del contesto registrazione non valido.")
+    try:
+        datetime.fromtimestamp(timestamp)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise ValueError("Timestamp del contesto registrazione non valido.") from exc
+
+    source = _context_path(root, str(Path(os.path.abspath(input_path))), "sorgente")
+    if source.suffix.lower() not in _AUDIO_EXT | _VIDEO_EXT:
+        raise ValueError(f"Estensione non supportata: {source.suffix}")
+    if source.exists() and (not source.is_file() or source.is_symlink()):
+        raise ValueError("La sorgente deve essere un file registrazione regolare.")
+
+    if category == "saved":
+        existing_dir = _context_path(root, context.get("existing_dir"), "existing_dir")
+        task_dir = _context_path(root, context.get("task_dir"), "task_dir")
+        title = context.get("title")
+        task_name = context.get("task_name", "")
+        if not isinstance(title, str) or not title.strip() or not isinstance(task_name, str):
+            raise ValueError("Titolo o task_name del contesto saved non validi.")
+        match = _CALL_DIRECTORY.fullmatch(existing_dir.name)
+        if not match or match.group(1) != title or not existing_dir.is_dir():
+            raise ValueError("Titolo e cartella della registrazione salvata non corrispondono.")
+        if source.parent != existing_dir:
+            raise ValueError("La sorgente saved deve essere direttamente nella cartella call.")
+        unassigned = root / "completate" / _cfg.UNASSIGNED_CALLS_DIR_NAME
+        valid_tasks = set(tasks.discover_task_dirs(root))
+        if task_dir != unassigned and task_dir not in valid_tasks:
+            raise ValueError("task_dir non identifica una task del vault.")
+        if task_dir == unassigned:
+            if task_name:
+                raise ValueError("Senza progetto deve avere task_name vuoto.")
+        elif tasks.task_labels(list(valid_tasks)).get(task_dir) != task_name:
+            raise ValueError("task_name non corrisponde alla label del progetto.")
+        if existing_dir.parent != task_dir and existing_dir.parent != task_dir / "archivio":
+            raise ValueError("La cartella saved non appartiene al task indicato.")
+        marker_path = existing_dir / ".recording-job.json"
+        expected_actions = {"save", "processed"}
+        marker = _read_recording_json(marker_path, "Marker della registrazione salvata")
+        if marker.get("id") != recording_id or marker.get("sha256") != file_hash or marker.get("action") not in expected_actions:
+            raise ValueError("Il marker non corrisponde alla registrazione salvata.")
+        result = dict(context)
+        result.update({
+            "recording_id": recording_id,
+            "sha256": file_hash,
+            "category": category,
+            "timestamp": float(timestamp),
+            "source": str(source),
+            "existing_dir": str(existing_dir),
+            "task_dir": str(task_dir),
+            "title": title,
+            "task_name": task_name,
+            "origin_processed": marker.get("action") == "processed",
+            "archive_audio_name": (
+                "audio_elaborato.m4a"
+                if source.name.casefold() == "audio_compresso.m4a"
+                else "audio_compresso.m4a"
+            ),
+        })
+        return result
+
+    trash_dir = _context_path(root, str(root / "cestino_registrazioni" / recording_id), "cestino")
+    if source.parent != trash_dir or not trash_dir.is_dir():
+        raise ValueError("La sorgente trash non appartiene alla cartella del suo id.")
+    marker = _read_recording_json(trash_dir / ".recording-job.json", "Marker della registrazione scartata")
+    metadata = _read_recording_json(trash_dir / "metadata.json", "Metadati della registrazione scartata")
+    if (
+        marker.get("id") != recording_id
+        or marker.get("sha256") != file_hash
+        or marker.get("action") not in {"discard", "processed"}
+        or metadata.get("id") != recording_id
+        or metadata.get("sha256") != file_hash
+        or metadata.get("name") != source.name
+    ):
+        raise ValueError("Marker o metadati non corrispondono alla registrazione scartata.")
+    return {
+        "recording_id": recording_id,
+        "sha256": file_hash,
+        "category": category,
+        "timestamp": float(timestamp),
+        "source": str(source),
+        "origin_processed": marker.get("action") == "processed",
+        "archive_audio_name": "audio_compresso.m4a",
+    }
+
+
+def _saved_summary_path(context: dict) -> Path:
+    return Path(context["existing_dir"]) / (_safe_name(context["title"]) + ".md")
+
+
+def _validate_saved_targets(context: dict, job_id: str) -> dict:
+    call_dir = Path(context["existing_dir"])
+    archive_audio_name = context.get("archive_audio_name", "audio_compresso.m4a")
+    if archive_audio_name not in {"audio_compresso.m4a", "audio_elaborato.m4a"}:
+        raise ValueError("Nome dell'audio archivio non valido.")
+    marker_path = call_dir / ".call-job.json"
+    if marker_path.is_symlink():
+        raise ValueError("Il marker pipeline della destinazione è un collegamento simbolico.")
+    owner = _read_recording_json(marker_path, "Marker pipeline") if marker_path.exists() else None
+    if owner and owner.get("id") != job_id:
+        raise RuntimeError("La cartella call appartiene a un'altra lavorazione.")
+
+    summary_path = _saved_summary_path(context)
+    if summary_path.is_symlink():
+        raise ValueError("La scheda di destinazione è un collegamento simbolico.")
+    if owner:
+        promotion = owner.get("promotion")
+        if not isinstance(promotion, dict):
+            raise ValueError("Il marker pipeline non contiene il manifest di promozione.")
+        files = promotion.get("files")
+        placeholder = promotion.get("placeholder")
+        required = {summary_path.name, "trascrizione.txt", archive_audio_name}
+        if (
+            not isinstance(files, dict)
+            or set(files) != required
+            or not isinstance(placeholder, dict)
+            or placeholder.get("name") != summary_path.name
+            or not isinstance(placeholder.get("sha256"), str)
+            or not _RECORDING_HASH.fullmatch(placeholder["sha256"])
+            or any(not isinstance(value, str) or not _RECORDING_HASH.fullmatch(value) for value in files.values())
+        ):
+            raise ValueError("Manifest di promozione non valido.")
+        for name, expected_hash in files.items():
+            target = call_dir / name
+            if target.is_symlink():
+                raise ValueError(f"Artefatto di destinazione simbolico: {name}")
+            if not target.exists():
+                continue
+            actual_hash = jobs.fingerprint(target)
+            allowed = {expected_hash}
+            if name == summary_path.name:
+                allowed.add(placeholder["sha256"])
+            if actual_hash not in allowed:
+                raise FileExistsError(f"Artefatto di destinazione modificato o estraneo: {name}")
+    else:
+        if not summary_path.is_file():
+            raise FileNotFoundError("La scheda placeholder della registrazione non è presente.")
+        fields, body = fm.parse_frontmatter(summary_path.read_text(encoding=_UTF8))
+        source_name = Path(context.get("source", "")).name
+        if (
+            fields.get("modalita") != "solo_registrazione"
+            or not source_name
+            or f"[[{source_name}]]" not in body
+            or "non trascritta" not in body.casefold()
+        ):
+            raise FileExistsError("La scheda esistente non è un placeholder di sola registrazione.")
+        for name in (archive_audio_name, "trascrizione.txt"):
+            target = call_dir / name
+            if target.exists() or target.is_symlink():
+                raise FileExistsError(f"Artefatto estraneo già presente: {target.name}")
+    return {"owner": owner, "summary_path": summary_path}
+
+
+def _promote_saved_outputs(
+    state: dict,
+    context: dict,
+    outputs: list[tuple[Path, Path]],
+    checkpoint,
+) -> Path:
+    call_dir = Path(context["existing_dir"])
+    ownership = _validate_saved_targets(context, state["id"])
+    marker_path = call_dir / ".call-job.json"
+    file_hashes = {target.name: jobs.fingerprint(source) for source, target in outputs}
+    if not ownership["owner"]:
+        placeholder_hash = jobs.fingerprint(ownership["summary_path"])
+        manifest = {
+            "id": state["id"],
+            "promotion": {
+                "files": file_hashes,
+                "placeholder": {"name": ownership["summary_path"].name, "sha256": placeholder_hash},
+            },
+        }
+        atomic_write_text(marker_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True))
+        ownership["owner"] = manifest
+    elif ownership["owner"].get("promotion", {}).get("files") != file_hashes:
+        raise RuntimeError("Gli artefatti di lavoro non corrispondono al manifest di promozione.")
+
+    promoted = list(state.get("promoted_files", []))
+    for source, target in outputs:
+        if source.is_symlink() or not source.is_file() or target.parent != call_dir:
+            raise RuntimeError("File di promozione non valido.")
+        if target.is_symlink():
+            raise ValueError(f"Artefatto di destinazione simbolico: {target.name}")
+        if target.exists():
+            actual_hash = jobs.fingerprint(target)
+            allowed = {file_hashes[target.name]}
+            if target.name == ownership["summary_path"].name:
+                allowed.add(ownership["owner"]["promotion"]["placeholder"]["sha256"])
+            if actual_hash not in allowed:
+                raise FileExistsError(f"Artefatto di destinazione modificato o estraneo: {target.name}")
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=call_dir, prefix=f".{target.name}.{state['id']}.", suffix=".part", delete=False
+        ) as handle:
+            temp_path = Path(handle.name)
+        try:
+            shutil.copy2(source, temp_path)
+            os.replace(temp_path, target)
+        finally:
+            temp_path.unlink(missing_ok=True)
+        if target.name not in promoted:
+            promoted.append(target.name)
+            checkpoint(promoted_files=promoted)
+    return call_dir
+
+
+def _recording_job(
+    root: Path,
+    source: Path,
+    config: dict,
+    context: dict,
+    expected_signature: list[int] | None,
+) -> tuple[dict, bool]:
+    source_exists = source.is_file()
+    source_key = os.path.normcase(str(source.resolve(strict=False)))
+    recording_candidates = [
+        state for state in jobs.iter_jobs(root)
+        if state.get("recording_id") == context["recording_id"]
+        and state.get("sha256") == context["sha256"]
+    ]
+    candidates = [
+        state for state in recording_candidates
+        if os.path.normcase(str(Path(state.get("source", "")).resolve(strict=False))) == source_key
+        and (
+            expected_signature is None
+            or [state.get("size"), state.get("mtime_ns")] == expected_signature
+        )
+    ]
+    relocated = False
+    if not candidates and source_exists and context["category"] == "saved":
+        previous_sources = [
+            Path(state.get("source", ""))
+            for state in recording_candidates
+            if state.get("recording_context", {}).get("category") == "saved"
+            and os.path.normcase(str(Path(state.get("source", "")).resolve(strict=False))) != source_key
+            and Path(state.get("source", "")).is_file()
+        ]
+        if previous_sources:
+            raise RuntimeError("La registrazione esiste anche nel percorso precedente; impossibile scegliere il job.")
+        candidates = [
+            state for state in recording_candidates
+            if state.get("recording_context", {}).get("category") == "saved"
+            and not Path(state.get("source", "")).exists()
+        ]
+        if len(candidates) > 1:
+            raise RuntimeError("Più checkpoint corrispondono alla registrazione spostata.")
+        relocated = bool(candidates)
+
+    if source_exists:
+        before = source.stat()
+        signature = [before.st_size, before.st_mtime_ns]
+        if expected_signature is not None and signature != expected_signature:
+            raise RuntimeError("La registrazione è cambiata dopo la scelta; selezionare nuovamente l'azione.")
+        digest = jobs.fingerprint(source)
+        after = source.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise RuntimeError("La sorgente è cambiata durante il controllo di integrità.")
+        if digest != context["sha256"]:
+            raise RuntimeError("L'hash della sorgente non coincide con il marker della registrazione.")
+    elif expected_signature is not None:
+        raise FileNotFoundError("La sorgente manca ma è stata fornita una signature attesa.")
+
+    if candidates:
+        state = max(candidates, key=lambda item: float(item.get("timestamp", 0)))
+        if state.get("config") != config and not state.get("complete"):
+            raise ValueError("Configurazione diversa dal checkpoint: ripristinare i parametri originali per riprendere.")
+    elif source_exists:
+        state = jobs.load_job(root, source, config, expected_signature=expected_signature)
+        if state.get("recording_id") not in (None, context["recording_id"]):
+            raise ValueError("La sorgente è già associata a un'altra registrazione.")
+        if state.get("sha256") != context["sha256"]:
+            raise RuntimeError("L'hash del checkpoint non coincide con la registrazione selezionata.")
+    else:
+        raise FileNotFoundError(f"Registrazione non trovata e nessun checkpoint per id {context['recording_id']}.")
+
+    state["recording_id"] = context["recording_id"]
+    state["recording_context"] = context
+    state["timestamp"] = context["timestamp"]
+    state["archive_audio_name"] = context.get("archive_audio_name", "audio_compresso.m4a")
+    if context["category"] == "saved":
+        if relocated:
+            owner_path = Path(context["existing_dir"]) / ".call-job.json"
+            owner = _read_recording_json(owner_path, "Marker pipeline") if owner_path.exists() else None
+            if owner and owner.get("id") != state["id"]:
+                raise RuntimeError("La cartella call appartiene a un'altra lavorazione.")
+            old_source = state.get("source", "")
+            old_target = state.get("source_target", "")
+            state.update({
+                "source": str(source),
+                "size": source.stat().st_size,
+                "mtime_ns": source.stat().st_mtime_ns,
+            })
+            if old_target and os.path.normcase(str(Path(old_target).resolve(strict=False))) == os.path.normcase(str(Path(old_source).resolve(strict=False))):
+                state["source_target"] = str(source)
+        state["final_dir"] = context["existing_dir"]
+        state["task_dir"] = context["task_dir"]
+        state["task_name"] = context["task_name"]
+        state["title"] = context["title"]
+        marker = Path(context["existing_dir"]) / ".call-job.json"
+        owner = _read_recording_json(marker, "Marker pipeline") if marker.exists() else None
+        if owner and owner.get("id") != state["id"]:
+            raise RuntimeError("La cartella call appartiene a un'altra lavorazione.")
+        _validate_saved_targets(context, state["id"])
+        summary = _saved_summary_path(context)
+        if not state.get("recording_archived_fields") and summary.is_file():
+            fields = fm.read_fields(summary)
+            preserved = {
+                key: fields[key]
+                for key in ("archived", "archived_at")
+                if key in fields
+            }
+            if preserved.get("archived") is True:
+                state["recording_archived_fields"] = preserved
+    if context.get("origin_processed") and not state.get("complete"):
+        raise RuntimeError("Il marker indica una registrazione già processata ma il job non è completo.")
+    result = state.get("result")
+    if state.get("complete"):
+        if not isinstance(result, dict):
+            raise ValueError("Il checkpoint completo non contiene un risultato valido.")
+        result = dict(result)
+        result["recording_id"] = context["recording_id"]
+        result["call_directory"] = result.get("call_directory") or state.get("final_dir", "")
+        if relocated:
+            call_dir = Path(context["existing_dir"])
+            result.update({
+                "call_directory": str(call_dir),
+                "task_directory": context["task_dir"],
+                "audio": str(call_dir / state["archive_audio_name"]),
+                "transcript": str(call_dir / "trascrizione.txt"),
+                "summary": str(call_dir / state["summary_name"]),
+                "source_archive": str(source),
+            })
+        state["result"] = result
+    jobs.save_job(root, state)
+    return state, bool(state.get("complete"))
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -467,9 +852,20 @@ def process(
     summary_model: str = "",
     task_model: str = "",
     expected_signature: list[int] | None = None,
+    recording_context: dict | None = None,
 ) -> dict:
-    root = (root or _cfg.VAULT_ROOT).resolve()
-    resolved = input_path.resolve()
+    configured_root = root or _cfg.VAULT_ROOT
+    if recording_context is None:
+        root = Path(configured_root).resolve()
+        resolved = input_path.resolve()
+        context = None
+    else:
+        root_path = Path(os.path.abspath(configured_root))
+        if root_path.is_symlink():
+            raise ValueError("La root del vault non può essere un collegamento simbolico.")
+        root = root_path.resolve()
+        context = _validate_recording_context(root, input_path, recording_context)
+        resolved = Path(os.path.abspath(input_path))
     max_mb = _cfg.ARCHIVE_MAX_MB if archive_max_mb is None else archive_max_mb
     if not math.isfinite(max_mb) or max_mb <= 0:
         raise ValueError("archive_max_mb deve essere positivo e finito.")
@@ -487,7 +883,16 @@ def process(
         "provider": _cfg.LLM_PROVIDER, "transcription_model": _cfg.GROQ_WHISPER_MODEL,
     }
     with jobs.vault_lock(root):
-        state = jobs.load_job(root, resolved, config, expected_signature=expected_signature)
+        if context is None:
+            state = jobs.load_job(root, resolved, config, expected_signature=expected_signature)
+            complete = False
+        else:
+            context = _validate_recording_context(root, input_path, recording_context)
+            state, complete = _recording_job(
+                root, resolved, config, context, expected_signature
+            )
+            if complete:
+                return state["result"]
         try:
             return _process_job(root, state)
         except Exception as exc:
@@ -499,9 +904,28 @@ def process(
 def _process_job(root: Path, state: dict) -> dict:
     source = Path(state["source"])
     work_dir = root / ".pipeline" / "work" / state["id"]
+    context = state.get("recording_context") or {}
+    saved_recording = context.get("category") == "saved"
     final_dir = Path(state["final_dir"]) if state.get("final_dir") else None
-    call_dir = final_dir if final_dir and final_dir.exists() else work_dir
-    if final_dir and final_dir.exists():
+    promotion_marker = final_dir / ".call-job.json" if saved_recording and final_dir else None
+    promotion_started = bool(
+        promotion_marker
+        and promotion_marker.is_file()
+        and _read_recording_json(promotion_marker, "Marker pipeline").get("id") == state["id"]
+        and "promotion" in _read_recording_json(promotion_marker, "Marker pipeline")
+    )
+    call_dir = (
+        final_dir if saved_recording and state.get("committed")
+        else work_dir if saved_recording
+        else final_dir if final_dir and final_dir.exists()
+        else work_dir
+    )
+    if saved_recording and state.get("committed"):
+        marker = final_dir / ".call-job.json"
+        owner = _read_recording_json(marker, "Marker pipeline")
+        if owner.get("id") != state["id"]:
+            raise RuntimeError("La destinazione appartiene a un'altra lavorazione.")
+    elif not saved_recording and final_dir and final_dir.exists():
         marker = final_dir / ".call-job.json"
         if not marker.is_file() or json.loads(marker.read_text(encoding=_UTF8)).get("id") != state["id"]:
             raise RuntimeError("La destinazione appartiene a un'altra lavorazione.")
@@ -548,7 +972,11 @@ def _process_job(root: Path, state: dict) -> dict:
         if state.get("transcript_sha256") != jobs.fingerprint(transcript_path):
             raise ValueError("La trascrizione del checkpoint è stata alterata.")
 
-        if "preliminary_task" not in state:
+        if saved_recording:
+            preliminary = Path(context["task_dir"])
+            if "preliminary_task" not in state:
+                checkpoint(preliminary_task=str(preliminary))
+        elif "preliminary_task" not in state:
             with phase("3/6 · Riconoscimento progetto"):
                 preliminary = _recognize_task(root, transcript, provider, config["task_model"])
             checkpoint(preliminary_task=str(preliminary) if preliminary else "")
@@ -587,30 +1015,52 @@ def _process_job(root: Path, state: dict) -> dict:
         final_dir = Path(state["final_dir"])
         title = re.sub(r'^\d{4}-\d{2}-\d{2}\s+\d{2}\.\d{2}\s+-\s+', '', final_dir.name)
         checkpoint(summary_name=_safe_name(title) + ".md")
-        _set_summary_title(summary_path, title)
-        _set_summary_frontmatter(summary_path, timestamp, state["task_name"])
-        summary_path = _rename_summary(summary_path, title)
-        archive_audio = call_dir / "audio_compresso.m4a"
+        if not promotion_started:
+            _set_summary_title(summary_path, title)
+            _set_summary_frontmatter(summary_path, timestamp, state["task_name"])
+            if saved_recording and state.get("recording_archived_fields"):
+                fields, body = fm.parse_frontmatter(summary_path.read_text(encoding=_UTF8))
+                fields.update(state["recording_archived_fields"])
+                fm.write_with_frontmatter(summary_path, fields, body)
+            summary_path = _rename_summary(summary_path, title)
+        archive_audio = call_dir / state.get("archive_audio_name", "audio_compresso.m4a")
         if not state.get("compressed") or not archive_audio.is_file():
             with phase("6/6 · Compressione audio"):
                 _ffmpeg.compress_audio(audio, archive_audio, config["archive_max_mb"], _ffmpeg.get_duration(audio))
             checkpoint(compressed=True)
         if not 0 < archive_audio.stat().st_size <= config["archive_max_mb"] * 1_000_000:
             raise ValueError("Audio archivio vuoto o oltre la soglia.")
-        atomic_write_text(call_dir / ".call-job.json", json.dumps({"id": state["id"]}))
-        task_dir.mkdir(parents=True, exist_ok=True)
-        call_dir.rename(final_dir)
-        call_dir = final_dir
-        checkpoint(committed=True)
+        if saved_recording:
+            call_dir = _promote_saved_outputs(
+                state,
+                context,
+                [
+                    (transcript_path, final_dir / "trascrizione.txt"),
+                    (archive_audio, final_dir / state.get("archive_audio_name", "audio_compresso.m4a")),
+                    (summary_path, final_dir / state["summary_name"]),
+                ],
+                checkpoint,
+            )
+            checkpoint(committed=True)
+        else:
+            atomic_write_text(call_dir / ".call-job.json", json.dumps({"id": state["id"]}))
+            task_dir.mkdir(parents=True, exist_ok=True)
+            call_dir.rename(final_dir)
+            call_dir = final_dir
+            checkpoint(committed=True)
 
     summary_path = call_dir / state["summary_name"]
-    archive_audio = call_dir / "audio_compresso.m4a"
+    archive_audio = call_dir / state.get("archive_audio_name", "audio_compresso.m4a")
     transcript_path = call_dir / "trascrizione.txt"
     for path in (summary_path, archive_audio, transcript_path):
         if not path.is_file() or path.stat().st_size == 0:
             raise RuntimeError(f"Artefatto confermato mancante: {path.name}")
     task_dir = Path(state["task_dir"])
-    if not state.get("source_target"):
+    if saved_recording:
+        target = source
+        if not state.get("source_target"):
+            checkpoint(source_target=str(target), source_archived=True)
+    elif not state.get("source_target"):
         if is_video:
             target = unique_path(call_dir / f"{summary_path.stem}{source.suffix.lower()}")
         else:
@@ -618,7 +1068,7 @@ def _process_job(root: Path, state: dict) -> dict:
                                  f"{timestamp.strftime('%Y-%m-%d %H.%M')} - {_safe_name(source.name)}")
         checkpoint(source_target=str(target))
     target = Path(state["source_target"])
-    if not state.get("source_archived"):
+    if not saved_recording and not state.get("source_archived"):
         if source.exists():
             if target.exists():
                 raise FileExistsError("Destinazione sorgente già occupata.")
@@ -630,7 +1080,8 @@ def _process_job(root: Path, state: dict) -> dict:
             raise RuntimeError("Sorgente non trovata né nella destinazione prevista.")
         os.utime(target, None)
         checkpoint(source_archived=True)
-    (call_dir / "audio.m4a").unlink(missing_ok=True)
+    if not saved_recording:
+        (call_dir / "audio.m4a").unlink(missing_ok=True)
     if not state.get("indexed"):
         with phase("Aggiornamento indici"):
             obs_indexes.rebuild(root)
@@ -647,6 +1098,8 @@ def _process_job(root: Path, state: dict) -> dict:
         "summary": str(summary_path), "source_archive": str(target),
         "provider": config["provider"], "job_id": state["id"],
     }
+    if state.get("recording_id"):
+        result["recording_id"] = state["recording_id"]
     checkpoint(complete=True, result=result)
     # Maintenance is independent; it never moves the call returned by this operation.
     try:

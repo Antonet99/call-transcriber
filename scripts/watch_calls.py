@@ -21,7 +21,7 @@ from rich.logging import RichHandler
 
 import scripts.settings as _cfg
 from scripts.filesystem import atomic_write_text
-from scripts.terminal import console, panel, interactive, read_key, clear_input, input_line, screen_session
+from scripts.terminal import console, panel, interactive, read_key, clear_input, input_line, screen_session, Choice, Selection, select_item
 
 _LOGGER = logging.getLogger(__name__)
 _SUPPORTED_EXT = {
@@ -467,7 +467,8 @@ class _CallHandler(FileSystemEventHandler):
                                 if entry.get("destination") and entry.get("status") != "done")
                 result = archive(self._root, excluded_call_dirs=excluded)
                 _cleanup_source_archive(self._root)
-                cleanup_trash(self._root)
+                from scripts.recording_catalog import protected_trash_dirs
+                cleanup_trash(self._root, excluded_dirs=protected_trash_dirs(self._root))
                 if result.get("archived"):
                     indexes.rebuild(self._root)
         except Exception:
@@ -498,48 +499,85 @@ def _save_details(root: Path, path: Path) -> tuple[str, Path] | None:
     from scripts import tasks
     from scripts.filesystem import safe_name
 
-    panel("Salva registrazione", path.name)
-    title = input_line("Titolo (Invio = nome originale, Esc = torna al menu):")
-    if title is None:
-        return None
-    title = title.strip()
-    directories = [directory for directory in tasks.discover_task_dirs(root) if not tasks.is_archived_task(directory)]
-    labels = tasks.task_labels(directories)
-    panel("Progetto", "0  Senza progetto\n" + "\n".join(f"{i}  {labels[d]}" for i, d in enumerate(directories, 1)))
+    title = path.stem
     while True:
-        choice = input_line("Progetto (numero, Esc = torna al menu):")
-        if choice is None:
+        panel("Titolo registrazione", path.name)
+        title = input_line("Modifica il titolo · Invio conferma · Esc indietro", initial=title)
+        if title is None:
             return None
-        choice = choice.strip()
-        if choice.isdigit() and 0 <= int(choice) <= len(directories):
-            directory = directories[int(choice) - 1] if int(choice) else root / "completate" / _cfg.UNASSIGNED_CALLS_DIR_NAME
-            return safe_name(title or path.stem), directory
-        panel("Progetto", "Seleziona un numero dall'elenco.\n\n0  Senza progetto\n" +
-              "\n".join(f"{i}  {labels[d]}" for i, d in enumerate(directories, 1)))
+        title = title.strip()
+        if not title:
+            continue
+        directories = [directory for directory in tasks.discover_task_dirs(root) if not tasks.is_archived_task(directory)]
+        labels = tasks.task_labels(directories)
+        choices = [Choice(root / "completate" / _cfg.UNASSIGNED_CALLS_DIR_NAME, "Senza progetto")]
+        choices.extend(Choice(directory, labels[directory]) for directory in directories)
+        directory = select_item("Progetto", choices, message=title)
+        if directory is not None:
+            return safe_name(title), directory
 
 
 def _show_queue(handler: _CallHandler) -> Path | None:
-    entries = handler.snapshot()
     names = {"waiting": "in registrazione", "ready": "da scegliere", "error": "da riprovare",
              "interrupted": "da riprendere", "missing": "file non disponibile"}
-    panel("Coda registrazioni", "\n".join(f"{i}  {path.name} · {names.get(entry.get('status'), entry.get('status'))}"
-                                        for i, (path, entry) in enumerate(entries, 1)) or "Nessuna registrazione in attesa.")
-    value = input_line("Numero della registrazione (Invio o Esc = torna):")
-    if value is None:
-        return None
-    value = value.strip()
-    if value.isdigit() and 1 <= int(value) <= len(entries):
-        path, entry = entries[int(value) - 1]
-        if entry.get("status") in {"ready", "error", "interrupted"}:
-            return path
-        console.print("  La registrazione non è ancora disponibile.")
-    return None
+    def choices():
+        return [Choice(path, f"{path.name} · {names.get(entry.get('status'), entry.get('status'))}",
+                       enabled=entry.get("status") in {"ready", "error", "interrupted"})
+                for path, entry in handler.snapshot()]
+    return select_item("Coda registrazioni", choices)
+
+
+def _show_unprocessed(handler: _CallHandler) -> None:
+    from scripts.recording_catalog import list_unprocessed, process_recording
+
+    groups = ("Salvate nelle cartelle", "Nel cestino")
+    message = "Seleziona una registrazione per vedere i dettagli."
+    while True:
+        try:
+            items = list_unprocessed(handler._root)
+        except (OSError, ValueError, RuntimeError):
+            _LOGGER.exception("Catalogo non disponibile")
+            select_item("Registrazioni non elaborate", [], message="Catalogo temporaneamente non disponibile.", groups=groups)
+            return
+        choices = []
+        for category, group in (("saved", groups[0]), ("trash", groups[1])):
+            for item in items:
+                if item["category"] != category:
+                    continue
+                label = f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(item['timestamp']))} · {item['title']}"
+                if category == "saved":
+                    label += f" · {item.get('task_name') or 'Senza progetto'}"
+                if item.get("status") == "interrupted":
+                    label += " · Da riprendere"
+                choices.append(Choice(item["id"], label, group))
+        selected = select_item("Registrazioni non elaborate", choices, message=message, groups=groups)
+        if selected is None:
+            return
+        item = next(item for item in items if item["id"] == selected)
+        detail = f"{item['title']}\n{item['source']}"
+        if item["category"] == "saved":
+            detail += f"\nProgetto: {item.get('task_name') or 'Senza progetto'} · titolo e cartella vengono mantenuti."
+        else:
+            expires = item.get("discarded_at", time.time()) + 30 * 86400
+            detail += f"\nNel cestino fino al {time.strftime('%d/%m/%Y', time.localtime(expires))}."
+        label = "Riprendi elaborazione" if item.get("status") == "interrupted" else "Trascrivi e riassumi"
+        if select_item("Elabora registrazione", [Choice("process", label)], message=detail) is None:
+            continue
+        try:
+            process_recording(handler._root, item, **handler._extra)
+            message = "Elaborazione completata. La registrazione è stata rimossa dall'elenco."
+        except Exception as exc:
+            _LOGGER.exception("Elaborazione su richiesta interrotta")
+            message = f"Elaborazione non completata: {exc}. Stato conservato; seleziona nuovamente la registrazione per riprendere."
+        finally:
+            clear_input()
 
 
 def _menu_loop(handler: _CallHandler, observer: Observer, maintenance_interval: float) -> None:
     selected = None
     visible_selection = None
     rendered = None
+    selection = Selection([])
     last_scan = last_maintenance = time.monotonic()
     while observer.is_alive():
         now = time.monotonic()
@@ -556,27 +594,40 @@ def _menu_loop(handler: _CallHandler, observer: Observer, maintenance_interval: 
         if selected not in [path for path, _ in ready]:
             selected = ready[0][0] if ready else None
         entry = next((entry for path, entry in ready if path == selected), {})
-        display = (str(selected), entry.get("status"), entry.get("action"), len(handler.snapshot()), len(ready))
-        if display != rendered:
-            if selected != visible_selection:
-                clear_input()
-                visible_selection = selected
-            if selected:
-                if entry.get("action"):
-                    options = "R  Riprendi l'operazione già scelta\nQ  Mostra coda"
-                else:
-                    options = "1  Trascrivi e riassumi\n2  Salva solo registrazione\n3  Scarta · cestino per 30 giorni\nQ  Mostra coda"
-                panel("Nuova call", f"{selected.name}\nIn attesa: {display[3]} · Pronte: {len(ready)}\n\n{options}\n\nScelta da tastiera · nessuna azione automatica")
+        focus = None
+        if selected != visible_selection:
+            previous = selection.choices[selection.index].value if selection.index >= 0 else None
+            focus = previous if previous in {"queue", "catalog"} else ("queue" if visible_selection is not None else None)
+            clear_input()
+            selection = Selection([])
+            visible_selection = selected
+        choices = []
+        if selected:
+            if entry.get("action"):
+                choices.append(Choice(entry["action"], "Riprendi l'operazione già scelta"))
             else:
-                panel("In ascolto", f"Registrazioni in attesa: {display[3]}\nQ  Mostra coda · Ctrl+C per uscire")
+                choices.extend([Choice("process", "Trascrivi e riassumi"),
+                                Choice("save", "Salva solo registrazione"),
+                                Choice("discard", "Scarta · cestino per 30 giorni")])
+        choices.extend([Choice("queue", "Nuove registrazioni in attesa · Q"),
+                        Choice("catalog", "Registrazioni non elaborate · N")])
+        selection.update(choices)
+        if focus is not None:
+            selection.index = next(i for i, choice in enumerate(choices) if choice.value == focus)
+        display = (str(selected), entry.get("status"), entry.get("action"), len(handler.snapshot()), len(ready), selection.index, console.size)
+        if display != rendered:
+            message = f"{selected.name}\nIn attesa: {display[3]} · Pronte: {len(ready)}" if selected else f"Registrazioni in attesa: {display[3]}"
+            panel("Nuova call" if selected else "In ascolto", selection.render(message))
             rendered = display
         key = read_key()
-        if key == "q":
+        action = {"q": "queue", "n": "catalog"}.get(key) or selection.handle(key)
+        if action == "queue":
             selected = _show_queue(handler) or selected
             rendered = None
-        elif selected and ((key in {"1", "2", "3"} and not entry.get("action"))
-                           or (key == "r" and entry.get("action"))):
-            action = entry.get("action") or {"1": "process", "2": "save", "3": "discard"}[key]
+        elif action == "catalog":
+            _show_unprocessed(handler)
+            rendered = None
+        elif selected and action in {"process", "save", "discard"}:
             title, directory = "", None
             if action == "save" and not entry.get("action"):
                 details = _save_details(handler._root, selected)
@@ -588,7 +639,7 @@ def _menu_loop(handler: _CallHandler, observer: Observer, maintenance_interval: 
                 handler.execute(selected, action, title=title, task_dir=directory)
             except (OSError, ValueError) as exc:
                 _LOGGER.exception("Scelta non eseguita")
-                console.print(f"  Scelta non eseguita: {exc}", markup=False)
+                panel("Scelta non eseguita", str(exc), "yellow")
             clear_input()
             rendered = None
 

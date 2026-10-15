@@ -53,16 +53,20 @@ Get-ScheduledTask -TaskName 'CallWatcher' | Select-Object TaskName, State
 
 ### Scelte del menu
 
-- `1`: trascrivi e riassumi con la pipeline attuale.
-- `2`: salva l'originale e una scheda Markdown; titolo modificabile e progetto scelto manualmente (`0` = Senza progetto, `Esc` = torna al menu). Nessuna estrazione audio o chiamata a provider.
-- `3`: sposta nel cestino recuperabile per 30 giorni, senza ulteriore conferma. La pulizia definitiva avviene durante la manutenzione del watcher attivo.
-- `Q`: mostra la coda e permette di selezionare una registrazione pronta.
-- `R`: riprende un'operazione interrotta; nessun retry automatico.
+- `↑` / `↓`: sposta la selezione evidenziata; gli elenchi scorrono se necessario.
+- `Invio`: conferma la voce selezionata o il titolo visibile.
+- `Esc`: torna alla schermata precedente. Invio non chiude gli elenchi.
+- `Q`: apre la coda dei nuovi arrivi dalla schermata principale.
+- `N`: apre direttamente le registrazioni non elaborate, divise in `Salvate nelle cartelle` e `Nel cestino` nello stesso elenco.
 - `Ctrl+C`: esce mantenendo coda e decisioni.
+
+Per una nuova registrazione selezionare l'azione e confermare con Invio. `Salva solo registrazione` chiede un titolo già compilato e un progetto da selezionare, senza estrarre audio o chiamare provider. `Scarta` sposta subito nel cestino recuperabile per 30 giorni. Per gli errori selezionare la voce di ripresa; nessun retry automatico.
+
+Nella vista `N` selezionare una registrazione, aprire i dettagli e confermare `Trascrivi e riassumi` o `Riprendi elaborazione`. Le registrazioni già elaborate e gli originali mancanti senza checkpoint vengono esclusi. Quelle salvate mantengono titolo, progetto e cartella; quelle nel cestino seguono la classificazione automatica. La pipeline riprende dai checkpoint in caso di interruzione.
 
 Durante l'elaborazione il watcher continua a rilevare altri file. Il menu torna al termine. Al riavvio vengono recuperati ordine e scelte; una registrazione senza scelta resta in attesa.
 
-Anche le registrazioni salvate con `2` seguono l'archiviazione dopo 15 giorni e la rimozione del video: senza audio estratto, dopo tale rimozione resta solo la scheda Markdown.
+Le registrazioni salvate seguono l'archiviazione dopo 15 giorni e la rimozione del video: senza audio estratto, dopo tale rimozione resta solo la scheda Markdown. La vista `N` non modifica queste scadenze; protegge dalla pulizia le elaborazioni avviate ma non ancora concluse.
 
 ### Monitoraggio del log in tempo reale
 

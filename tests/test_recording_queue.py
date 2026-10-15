@@ -357,20 +357,20 @@ class RecordingQueueTests(unittest.TestCase):
         transcribe.assert_not_called()
         provider.assert_not_called()
 
-    def test_menu_key_three_discards_without_followup_confirmation(self):
+    def test_menu_discard_selection_needs_enter_without_followup_confirmation(self):
         path = self.add_file()
         handler = Mock()
         handler.snapshot.return_value = [(path, {"status": "ready", "action": ""})]
         observer = Mock()
-        observer.is_alive.side_effect = [True, False]
+        observer.is_alive.side_effect = [True, True, True, False]
 
-        with patch.object(watcher, "read_key", return_value="3") as read_key, \
+        with patch.object(watcher, "read_key", side_effect=["down", "down", "enter"]) as read_key, \
                 patch.object(watcher, "panel"), \
                 patch.object(watcher, "clear_input"):
             watcher._menu_loop(handler, observer, maintenance_interval=3600)
 
         handler.execute.assert_called_once_with(path, "discard", title="", task_dir=None)
-        read_key.assert_called_once_with()
+        self.assertEqual(read_key.call_count, 3)
 
     def test_stale_pending_checkpoint_does_not_replace_reused_source_path(self):
         path = self.add_file(data=b"new recording")
