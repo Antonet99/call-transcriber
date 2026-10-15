@@ -12,7 +12,8 @@ L'agente deve distinguere fatti confermati, ipotesi e informazioni mancanti, non
 
 ## Funzionalita'
 
-- Watch automatico della cartella `vault/da_processare/` (avviato automaticamente al login via Task Scheduler).
+- Watch della cartella `vault/da_processare/` con menu interattivo e coda persistente.
+- Scelta esplicita per ogni registrazione: trascrivi e riassumi, salva solo l'originale, oppure scarta nel cestino per 30 giorni.
 - Supporto a file audio e video comuni (`.m4a`, `.mp3`, `.wav`, `.mp4`, `.mkv`, `.mov`, ecc.).
 - Trascrizione con Groq Whisper (`whisper-large-v3-turbo`).
 - Riuso automatico di `trascrizione.txt` se una lavorazione precedente e' fallita dopo Whisper.
@@ -112,7 +113,7 @@ Registra il watcher come task di Windows (una tantum):
 .\scripts\register_startup_task.ps1
 ```
 
-Da questo momento `watch_calls.py` si avvia automaticamente ad ogni login. Lo script rimuove anche il vecchio task PowerShell `Call Automation Watcher`, se presente, per evitare watcher duplicati. Il watcher elabora anche i file gia' presenti in `VAULT_ROOT\da_processare\` all'avvio.
+Da questo momento il launcher si avvia ad ogni login nella sessione utente interattiva. Lo script rimuove anche il vecchio task PowerShell `Call Automation Watcher`, se presente, per evitare watcher duplicati. Il watcher recupera anche i file gia' presenti in `VAULT_ROOT\da_processare\` all'avvio e attende sempre una scelta. Se stdin o output non sono un terminale interattivo, conserva la coda ed esce senza avviare elaborazioni o manutenzione: aprire il launcher in una console. Il rilevamento riprende al successivo avvio.
 
 Comandi utili:
 
@@ -125,8 +126,48 @@ Unregister-ScheduledTask -TaskName 'CallWatcher' -Confirm:$false  # rimuovi
 ## Avvio manuale del watcher
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\watch_calls.py
+.\scripts\start_watcher.cmd
 ```
+
+### Menu e coda delle registrazioni
+
+Il pannello `Nuova call` mostra il nome del file selezionato e il numero delle registrazioni in attesa. Il terminale usa una schermata che si aggiorna sul posto: menu, coda e progressi sostituiscono la vista precedente, mantenendo lo stile ciano. L'esito dell'ultima operazione resta visibile in forma compatta. Basta premere il tasto dell'opzione; Esc torna al menu durante gli inserimenti senza richiedere Invio.
+
+| Tasto | Azione |
+|---|---|
+| `1` | Avvia la pipeline completa con Groq e Claude. |
+| `2` | Chiede titolo e progetto, poi salva soltanto la registrazione originale e una scheda Markdown locale. |
+| `3` | Sposta subito la registrazione in `VAULT_ROOT/cestino_registrazioni/<id>/`, senza una seconda conferma. |
+| `Q` | Mostra l'intera coda; inserire un numero per scegliere una registrazione pronta. |
+| `R` | Riprende un'operazione interrotta conservando la scelta e la destinazione precedenti. |
+| `Ctrl+C` | Ferma il watcher e conserva la coda. |
+
+Invio vuoto, input non valido e attesa non avviano azioni. La coda procede per ordine di disponibilità; i file preesistenti sono rilevati in ordine cronologico. Gli eventi duplicati dello stesso file non producono altre voci. Un file in scrittura non blocca gli altri: il watcher verifica dimensione, timestamp e, su Windows, disponibilità del file rispetto agli accessi in scrittura.
+
+Mentre una pipeline è in corso, restano visibili i progressi attuali. Le nuove registrazioni continuano a essere rilevate; il menu ritorna alla conclusione. I tasti premuti durante l'elaborazione vengono scartati. Il comando diretto `process_call.py` resta invece un avvio esplicito della pipeline completa.
+
+Stato, ordine e scelte sono conservati in `.pipeline/watcher-state.json`, con copia `.json.bak`. Al riavvio i file presenti vengono ricontrollati; le operazioni interrotte richiedono `R`, senza ripartenze automatiche delle chiamate ai provider. Una decisione viene salvata prima di iniziare l'operazione. Gli errori tornano nel menu con stato recuperabile e dettagli nel log. Se il journal principale è illeggibile viene usata la copia di sicurezza; se entrambe le copie sono illeggibili il watcher si ferma senza sovrascriverle o muovere registrazioni. I checkpoint storici della pipeline vengono proposti per ripresa manuale.
+
+### Salvataggio della sola registrazione
+
+Il titolo suggerito è il nome originale del file. Il progetto viene scelto manualmente da un elenco di progetti attivi, oppure `0` per `Senza progetto`; `Esc` torna al menu. La struttura resta quella delle altre call:
+
+```text
+completate/Task/<progetto>/YYYY-MM-DD HH.mm - Titolo/
+  Titolo.mp4                 # registrazione originale, invariata nei contenuti
+  Titolo.md                  # scheda locale: data, titolo, progetto e link
+  .recording-job.json         # identificazione per ripresa dopo interruzione
+```
+
+Per `Senza progetto` si usa `completate/Senza progetto/`. Non vengono estratti o compressi audio, generate trascrizioni o riassunti, invocati provider o aggiornate Kanban. La scheda è inclusa negli indici Obsidian. I nomi vengono normalizzati per Windows e le collisioni ricevono un suffisso, senza sovrascritture.
+
+Si applica la stessa archiviazione delle altre call: dopo `ARCHIVE_DAYS` (15 giorni) la cartella passa in `archivio` e il video viene eliminato. Poiché questa modalità non genera audio o trascrizione, dopo l'eliminazione del video resta soltanto la scheda. Gli originali audio seguono la normale regola di conservazione degli audio nelle cartelle call.
+
+### Cestino delle registrazioni
+
+La scelta `3` autorizza lo spostamento immediato nel cestino e la cancellazione automatica dopo 30 giorni dalla data di scarto, registrata nei metadati. La manutenzione verifica i metadati e l'identità del file prima di eliminarlo. File estranei, collegamenti simbolici o metadati corrotti non vengono cancellati. La pulizia avviene all'avvio interattivo e periodicamente mentre il watcher è attivo; se è spento viene differita al successivo avvio.
+
+Per recuperare una registrazione prima della scadenza, fermare il watcher e spostare l'originale dalla sua sottocartella del cestino a `da_processare` con un nome libero. Il percorso originale è riportato in `metadata.json`. Al riavvio verrà rilevata come una registrazione da scegliere.
 
 ## Uso manuale (singola call)
 
@@ -175,7 +216,7 @@ Claude CLI è l'unico motore LLM della pipeline.
 
 Il flusso qualitativo del riassunto resta composto da piu' passaggi:
 
-1. riconoscimento preliminare della task usando trascrizione, indice globale e task attive/archiviate; il classificatore può restituire `NESSUNA_TASK` per una call senza progetto;
+1. riconoscimento preliminare della task usando trascrizione, indice globale e task attive; il classificatore può restituire `NESSUNA_TASK` per una call senza progetto;
 2. assemblaggio del prompt con `scripts/prompt_riassunto_call.md`, questo README, l'indice globale e il README della task preliminare;
 3. draft del riassunto con Claude;
 4. audit interni tramite i subagent Claude e revisione finale;
@@ -213,8 +254,8 @@ tags: [call, italgas, mcp-server]
 
 1. Il file viene copiato in `VAULT_ROOT\da_processare\`.
 2. Il watcher rileva il file.
-3. Attesa finche' dimensione e timestamp sono stabili.
-4. `ffmpeg` estrae o converte l'audio in `audio.m4a`.
+3. Attesa finche' il file è disponibile e dimensione e timestamp sono stabili; la registrazione entra nella coda persistente del menu.
+4. Dopo la scelta `1`, `ffmpeg` estrae o converte l'audio in `audio.m4a`. Le scelte `2` e `3` seguono i flussi locali descritti sopra.
 5. Se `trascrizione.txt` esiste gia' nella cartella della call, viene riusata; altrimenti Groq Whisper la produce con chunking automatico per file grandi.
 6. La pipeline riconosce preliminarmente la task usando `completate/README.md` e i README disponibili.
 7. Claude genera il riassunto usando prompt, README root, indice globale e README task preliminare.

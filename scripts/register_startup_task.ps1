@@ -34,7 +34,8 @@ foreach ($legacyTaskName in $LegacyTaskNames) {
 
 # Action: il launcher imposta UTF-8 e lascia a settings.py il VAULT_ROOT da .env.
 $action = New-ScheduledTaskAction `
-    -Execute $watchLauncher `
+    -Execute $env:ComSpec `
+    -Argument ('/d /c ""{0}""' -f $watchLauncher) `
     -WorkingDirectory $rootDir
 
 # Trigger: al login dell'utente corrente
@@ -58,6 +59,7 @@ Register-ScheduledTask `
     -Force | Out-Null
 
 Write-Host "Task '$TaskName' registrato. Il watcher si avviera' automaticamente al prossimo login."
+Write-Host "Il menu richiede una console interattiva. Senza stdin interattivo conserva la coda ed esce."
 Write-Host "Log: VAULT_ROOT\logs\watcher.log (VAULT_ROOT è impostato da .env)"
 Write-Host ""
 Write-Host "Comandi utili:"

@@ -1,19 +1,14 @@
-"""Watcher non bloccante della cartella ``da_processare/``.
-
-La verifica di stabilità gira in un thread dedicato: un file ancora in
-scrittura resta in attesa mentre le altre call pronte possono proseguire. Gli
-errori della pipeline vengono conservati in un piccolo journal JSON per
-limitare i retry anche dopo il riavvio del watcher.
-"""
+"""Rileva registrazioni e conserva una coda persistente di scelte esplicite."""
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import logging.handlers
+import math
 import os
-import queue
-import sys
+import uuid
 import threading
 import time
 from contextlib import contextmanager
@@ -26,7 +21,7 @@ from rich.logging import RichHandler
 
 import scripts.settings as _cfg
 from scripts.filesystem import atomic_write_text
-from scripts.terminal import console, panel
+from scripts.terminal import console, panel, interactive, read_key, clear_input, input_line, screen_session
 
 _LOGGER = logging.getLogger(__name__)
 _SUPPORTED_EXT = {
@@ -69,6 +64,7 @@ def _instance_lock(root: Path) -> Iterator[None]:
     lock_path = root / ".pipeline" / "watcher.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+b")
+    acquired = False
     try:
         if os.name == "nt":
             import msvcrt
@@ -76,6 +72,7 @@ def _instance_lock(root: Path) -> Iterator[None]:
             handle.seek(0)
             handle.write(b"0")
             handle.flush()
+            handle.seek(0)
             try:
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
             except OSError as exc:
@@ -87,15 +84,16 @@ def _instance_lock(root: Path) -> Iterator[None]:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
                 raise RuntimeError("Un altro watcher è già attivo per questo vault.") from exc
+        acquired = True
         yield
     finally:
         try:
-            if os.name == "nt":
+            if acquired and os.name == "nt":
                 import msvcrt
 
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
+            elif acquired:
                 import fcntl
 
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
@@ -106,6 +104,7 @@ def _instance_lock(root: Path) -> Iterator[None]:
 class _StateStore:
     def __init__(self, root: Path) -> None:
         self._path = root / ".pipeline" / "watcher-state.json"
+        self._backup = self._path.with_suffix(".json.bak")
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._entries: dict[str, dict[str, Any]] = {}
@@ -115,336 +114,525 @@ class _StateStore:
     def key(path: Path | str) -> str:
         return os.path.normcase(os.path.abspath(os.fspath(path)))
 
+    @staticmethod
+    def _valid_entry(entry: Any) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        for name in ("first_seen", "ready_at", "timestamp"):
+            value = entry.get(name)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not math.isfinite(value)):
+                return False
+        signature = entry.get("signature")
+        if signature is not None and (not isinstance(signature, list) or len(signature) != 2
+                                      or any(type(v) is not int or v < 0 for v in signature)):
+            return False
+        for name in ("action", "status", "destination", "recording_target", "title", "task_dir", "id"):
+            if entry.get(name) is not None and not isinstance(entry[name], str):
+                return False
+        return entry.get("pipeline_kwargs") is None or isinstance(entry["pipeline_kwargs"], dict)
+
     def _load(self) -> None:
-        try:
-            payload = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        errors = []
+        for path in (self._path, self._backup):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if (not isinstance(payload, dict) or payload.get("version") != _STATE_VERSION
+                        or not isinstance(payload.get("entries"), dict)
+                        or not all(self._valid_entry(v) for v in payload["entries"].values())):
+                    raise ValueError("Formato del journal non valido")
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError) as exc:
+                errors.append(exc)
+                continue
+            self._entries = payload["entries"]
+            if path == self._backup:
+                _LOGGER.warning("Coda recuperata dalla copia di sicurezza del journal.")
             return
-        if payload.get("version") != _STATE_VERSION or not isinstance(payload.get("entries"), dict):
-            return
-        self._entries = {
-            str(key): value
-            for key, value in payload["entries"].items()
-            if isinstance(value, dict)
-        }
+        if errors:
+            raise RuntimeError("Journal della coda illeggibile: file preservati, nessuna azione avviata.") from errors[0]
 
     def get(self, path: Path | str) -> dict[str, Any]:
         with self._lock:
-            return dict(self._entries.get(self.key(path), {}))
+            return copy.deepcopy(self._entries.get(self.key(path), {}))
+
+    def entries(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return copy.deepcopy(self._entries)
 
     def update(self, path: Path | str, **values: Any) -> dict[str, Any]:
         key = self.key(path)
         with self._lock:
+            old = copy.deepcopy(self._entries)
             entry = self._entries.setdefault(key, {})
             entry.update(values)
             entry["updated_at"] = time.time()
-            self._save()
-            return dict(entry)
+            try:
+                self._save()
+            except OSError:
+                self._entries = old
+                raise
+            return copy.deepcopy(entry)
 
     def remove(self, path: Path | str) -> None:
         with self._lock:
+            old = copy.deepcopy(self._entries)
             self._entries.pop(self.key(path), None)
-            self._save()
+            try:
+                self._save()
+            except OSError:
+                self._entries = old
+                raise
 
     def _save(self) -> None:
+        payload = json.dumps({"version": _STATE_VERSION, "entries": self._entries},
+                             ensure_ascii=False, indent=2)
+        atomic_write_text(self._path, payload)
         try:
-            atomic_write_text(
-                self._path,
-                json.dumps(
-                    {"version": _STATE_VERSION, "entries": self._entries},
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
+            atomic_write_text(self._backup, payload)
         except OSError:
-            _LOGGER.warning(
-                "Impossibile salvare lo stato del watcher in %s; "
-                "verrà ritentato alla prossima modifica",
-                self._path,
-                exc_info=True,
-            )
+            _LOGGER.warning("Copia di sicurezza del journal non aggiornata", exc_info=True)
+
+
+def _file_available(path: Path) -> bool:
+    if path.is_symlink() or not path.is_file():
+        return False
+    if os.name != "nt":
+        return True
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    handle = create(str(path), 0x80000000, 1, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        return False
+    close(handle)
+    return True
 
 
 class _CallHandler(FileSystemEventHandler):
-    def __init__(
-        self,
-        root: Path,
-        extra_kwargs: dict[str, Any],
-        *,
-        retry_limit: int = _DEFAULT_RETRY_LIMIT,
-        retry_backoff_seconds: float = _DEFAULT_RETRY_BACKOFF_SECONDS,
-        readiness_interval_seconds: float = _DEFAULT_READINESS_INTERVAL_SECONDS,
-        stable_checks: int = _DEFAULT_STABLE_CHECKS,
-        stop_timeout_seconds: float = _DEFAULT_STOP_TIMEOUT_SECONDS,
-    ) -> None:
-        self._root = root
+    def __init__(self, root: Path, extra_kwargs: dict[str, Any], *,
+                 readiness_interval_seconds: float = _DEFAULT_READINESS_INTERVAL_SECONDS,
+                 stable_checks: int = _DEFAULT_STABLE_CHECKS,
+                 stop_timeout_seconds: float = _DEFAULT_STOP_TIMEOUT_SECONDS,
+                 **legacy_kwargs: Any) -> None:
+        self._root = root.resolve()
         self._extra = extra_kwargs
-        self._retry_limit = max(1, retry_limit)
-        self._retry_backoff = max(0.0, retry_backoff_seconds)
         self._readiness_interval = max(0.05, readiness_interval_seconds)
         self._stable_checks = max(1, stable_checks)
         self._stop_timeout = max(0.1, stop_timeout_seconds)
-        self._queue: queue.Queue[str | None] = queue.Queue()
         self._pending: dict[str, dict[str, Any]] = {}
-        self._known: set[str] = set()
+        self._active: str | None = None
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._state = _StateStore(root)
-        self._worker = threading.Thread(target=self._run_worker, name="call-worker", daemon=True)
         self._readiness = threading.Thread(target=self._run_readiness, name="call-readiness", daemon=True)
-        self._worker.start()
         self._readiness.start()
-
-    def _should_process(self, path: str) -> bool:
-        return Path(path).suffix.lower() in _SUPPORTED_EXT
 
     @staticmethod
     def _signature(path: Path) -> tuple[int, int] | None:
         try:
             stat = path.stat()
+            return stat.st_size, stat.st_mtime_ns
         except OSError:
             return None
-        return stat.st_size, stat.st_mtime_ns
 
     def _handle(self, path: str, *, bypass_stability: bool = False) -> None:
-        if not self._should_process(path):
+        source = Path(os.path.abspath(path))
+        if (source.suffix.lower() not in _SUPPORTED_EXT or source.is_symlink()
+                or source.parent.resolve() != self._root / "da_processare"):
             return
-        key = _StateStore.key(path)
-        signature = self._signature(Path(path))
+        key = _StateStore.key(source)
         with self._lock:
-            if key in self._known:
+            if key in self._pending:
                 return
-            self._known.add(key)
-            current = self._state.get(path)
-            previous_signature = current.get("signature")
-            if previous_signature != list(signature or ()):
-                self._state.update(path, attempts=0, status="waiting", signature=list(signature or ()))
-            self._pending[key] = {
-                "path": path,
-                "signature": signature,
-                "same": self._stable_checks if bypass_stability else 0,
-                "queued": bypass_stability,
-            }
+            current = self._state.get(source)
+            signature = self._signature(source)
+            reappeared = current.get("status") == "done" and current.get("source_removed") and signature is not None
+            if (current.get("status") == "done" and current.get("signature") == list(signature or ())
+                    and not reappeared):
+                return
+            if reappeared or (current.get("signature") != list(signature or ()) and signature is not None):
+                current = self._state.update(source, id=uuid.uuid4().hex[:24], action="",
+                                             destination=None, recording_target=None, sha256=None,
+                                             note_ready=False, discarded_at=None, original_path=None,
+                                             source_removed=False, pipeline_kwargs=self._extra,
+                                             first_seen=time.time(), ready_at=None, last_error="",
+                                             signature=list(signature), timestamp=signature[1] / 1e9,
+                                             status="waiting", from_job=False)
+            elif not current.get("id"):
+                current = self._state.update(source, id=uuid.uuid4().hex[:24],
+                                             first_seen=time.time(), status="waiting")
+            if current.get("status") == "processing":
+                current = self._state.update(source, status="interrupted")
+            resume_status = current.get("status", "waiting")
+            if signature is not None and current.get("status") != "waiting":
+                self._state.update(source, status="waiting")
+            self._pending[key] = {"path": str(source), "signature": signature, "same": 0,
+                                  "resume_status": resume_status}
             if bypass_stability:
-                self._queue.put(path)
+                self._state.update(source, status="interrupted", ready_at=current.get("ready_at") or time.time())
 
-    def _due(self, path: str) -> bool:
-        entry = self._state.get(path)
-        if entry.get("status") == "failed":
-            return False
-        return float(entry.get("next_attempt_at", 0.0) or 0.0) <= time.time()
+    def scan(self) -> None:
+        watch_dir = self._root / "da_processare"
+        paths = []
+        for path in watch_dir.iterdir():
+            signature = self._signature(path)
+            if signature is not None:
+                paths.append((signature[1], path.name, path))
+        for _, _, path in sorted(paths):
+            if path.is_file():
+                self._handle(str(path))
+        for path, entry in self._state.entries().items():
+            if entry.get("status") != "done":
+                self._handle(path, bypass_stability=bool(entry.get("destination") and not Path(path).exists()))
+
+    def _check_readiness(self) -> None:
+        with self._lock:
+            for item in list(self._pending.values()):
+                path = Path(item["path"])
+                current = self._state.get(path)
+                if current.get("status") == "done" or self._active == _StateStore.key(path):
+                    continue
+                if current.get("status") == "processing":
+                    current = self._state.update(path, status="interrupted")
+                signature = self._signature(path)
+                if signature is None:
+                    status = "interrupted" if current.get("destination") or current.get("from_job") else "missing"
+                    if current.get("status") != status:
+                        self._state.update(path, status=status, ready_at=current.get("ready_at") or time.time())
+                    continue
+                if list(signature) != current.get("signature"):
+                    self._state.update(path, signature=list(signature), action="", status="waiting",
+                                       id=uuid.uuid4().hex[:24], timestamp=signature[1] / 1e9,
+                                       ready_at=None, destination=None, recording_target=None, sha256=None,
+                                       note_ready=False, discarded_at=None, original_path=None,
+                                       source_removed=False, pipeline_kwargs=self._extra,
+                                       last_error="", from_job=False)
+                    item.update(signature=signature, same=0, resume_status="waiting")
+                if signature == item["signature"]:
+                    item["same"] += 1
+                else:
+                    item.update(signature=signature, same=1)
+                if item["same"] < self._stable_checks or signature[0] <= 0 or not _file_available(path):
+                    if current.get("status") == "ready":
+                        self._state.update(path, status="waiting")
+                    continue
+                current = self._state.get(path)
+                if current.get("status") in {"waiting", "missing"}:
+                    resume = item.get("resume_status")
+                    status = resume if resume in {"error", "interrupted"} else "ready"
+                    self._state.update(path, status=status, ready_at=current.get("ready_at") or time.time())
 
     def _run_readiness(self) -> None:
         while not self._stop_event.wait(self._readiness_interval):
-            with self._lock:
-                pending = list(self._pending.values())
-            for item in pending:
-                path = Path(item["path"])
-                if item.get("queued") or not self._due(str(path)):
-                    continue
-                signature = self._signature(path)
-                if signature is None:
-                    if self._state.get(path).get("from_job"):
-                        self._enqueue(path, bypass_stability=True)
-                    continue
-                with self._lock:
-                    if signature == item.get("signature"):
-                        item["same"] = int(item.get("same", 0)) + 1
-                    else:
-                        item["signature"] = signature
-                        item["same"] = 1
-                    stable = item["same"] >= self._stable_checks
-                if stable:
-                    self._enqueue(path)
-
-    def _enqueue(self, path: Path, *, bypass_stability: bool = False) -> None:
-        key = _StateStore.key(path)
-        with self._lock:
-            item = self._pending.get(key)
-            if item is None:
-                self._pending[key] = {
-                    "path": str(path),
-                    "signature": self._signature(path),
-                    "same": self._stable_checks,
-                    "queued": True,
-                }
-            else:
-                if item.get("queued"):
-                    return
-                item["queued"] = True
-            self._state.update(path, status="queued", next_attempt_at=0.0)
-            self._queue.put(str(path))
-
-    def _schedule_retry(self, path: str, exc: Exception) -> None:
-        current = self._state.get(path)
-        attempts = int(current.get("attempts", 0) or 0) + 1
-        failed = attempts >= self._retry_limit
-        delay = self._retry_backoff * (2 ** max(0, attempts - 1))
-        status = "failed" if failed else "waiting"
-        self._state.update(
-            path,
-            attempts=attempts,
-            status=status,
-            next_attempt_at=time.time() + delay,
-            last_error=str(exc)[:1000],
-        )
-        if failed:
-            _LOGGER.error(
-                "Pipeline definitivamente fallita per %s dopo %d tentativi; "
-                "stato salvato in .pipeline/watcher-state.json",
-                path,
-                attempts,
-            )
-        else:
-            _LOGGER.warning("Retry %d/%d per %s tra %.0fs", attempts, self._retry_limit, path, delay)
-        with self._lock:
-            item = self._pending.get(_StateStore.key(path))
-            if item is not None:
-                item["queued"] = False
-
-    def _run_worker(self) -> None:
-        from scripts.process_call import process
-
-        while True:
-            path = self._queue.get()
-            if path is None:
-                self._queue.task_done()
-                break
-            if self._stop_event.is_set():
-                with self._lock:
-                    item = self._pending.get(_StateStore.key(path))
-                    if item is not None:
-                        item["queued"] = False
-                self._queue.task_done()
-                continue
-            self._state.update(path, status="processing")
             try:
-                process(input_path=Path(path), root=self._root, **self._extra)
-            except Exception as exc:
-                _LOGGER.exception("Pipeline fallita per %s", path)
-                console.print("  [red]✗ Elaborazione interrotta.[/red] Dettagli in logs/watcher.log.")
-                self._schedule_retry(path, exc)
+                self._check_readiness()
+            except Exception:
+                _LOGGER.exception("Controllo coda differito; registrazioni preservate")
+
+    def snapshot(self, *, ready_only: bool = False) -> list[tuple[Path, dict]]:
+        with self._lock:
+            values = [(Path(key), self._state.get(key)) for key in self._pending]
+        values = [(path, entry) for path, entry in values if entry.get("status") != "done"
+                  and (not ready_only or entry.get("status") in {"ready", "error", "interrupted"})]
+        return sorted(values, key=lambda item: (item[1].get("ready_at") or float("inf"),
+                                               item[1].get("first_seen", 0), str(item[0])))
+
+    def execute(self, path: Path, action: str, *, title: str = "", task_dir: Path | None = None) -> bool:
+        from scripts import jobs, recordings
+        from scripts.process_call import process
+        from scripts.obsidian import indexes
+
+        if action not in {"process", "save", "discard"}:
+            raise ValueError("Azione non valida")
+        with self._lock:
+            entry = self._state.get(path)
+            if entry.get("status") not in {"ready", "error", "interrupted"}:
+                return False
+            old_action = entry.get("action")
+            if old_action and old_action != action:
+                raise ValueError("Riprendere prima l'operazione già scelta per questa registrazione.")
+            signature = self._signature(path)
+            if signature is not None:
+                if list(signature) != entry.get("signature") or not _file_available(path):
+                    self._state.update(path, status="waiting", action="", ready_at=None)
+                    self._pending[_StateStore.key(path)].update(same=0, signature=signature, resume_status="waiting")
+                    return False
+            elif not (entry.get("destination") or entry.get("from_job")):
+                self._state.update(path, status="missing")
+                return False
+            entry = self._state.update(path, action=action, status="processing",
+                                       from_job=action == "process",
+                                       title=entry.get("title") if old_action else title,
+                                       task_dir=entry.get("task_dir") if old_action else str(task_dir or ""),
+                                       pipeline_kwargs=entry.get("pipeline_kwargs", self._extra))
+            self._active = _StateStore.key(path)
+
+        def checkpoint(**values: Any) -> None:
+            updated = self._state.update(path, **values)
+            entry.clear()
+            entry.update(updated)
+
+        try:
+            if action == "process":
+                process(input_path=path, root=self._root, expected_signature=entry.get("signature"),
+                        **entry["pipeline_kwargs"])
             else:
-                self._state.remove(path)
-                with self._lock:
-                    self._pending.pop(_StateStore.key(path), None)
-            finally:
-                with self._lock:
-                    self._known.discard(_StateStore.key(path))
-                self._queue.task_done()
+                with jobs.vault_lock(self._root):
+                    if action == "save":
+                        destination = recordings.save_recording(self._root, path, entry, checkpoint)
+                        indexes.rebuild(self._root)
+                        panel("Registrazione salvata", f"{destination}\n\nNessuna trascrizione o chiamata ai provider.", "green")
+                    elif action == "discard":
+                        destination = recordings.discard_recording(self._root, path, entry, checkpoint)
+                        panel("Registrazione scartata", f"{destination}\n\nRecuperabile per 30 giorni dalla data di scarto.", "green")
+                    else:
+                        raise ValueError("Azione non valida")
+            checkpoint(status="done", last_error="", source_removed=not path.exists())
+            with self._lock:
+                self._pending.pop(_StateStore.key(path), None)
+            return True
+        except Exception as exc:
+            _LOGGER.exception("Operazione interrotta per %s", path)
+            try:
+                checkpoint(status="error", last_error=str(exc)[:1000])
+            except OSError:
+                _LOGGER.exception("Salvataggio errore differito; decisione già conservata")
+            console.print("  [red]Operazione interrotta.[/red] Stato conservato; usa Riprendi. Dettagli in logs/watcher.log.")
+            return False
+        finally:
+            with self._lock:
+                self._active = None
 
     def refresh_pending_inputs(self) -> None:
-        try:
-            from scripts.jobs import pending_inputs
+        from scripts.jobs import iter_jobs
 
-            paths = pending_inputs(self._root)
-        except (ImportError, AttributeError, OSError) as exc:
-            _LOGGER.debug("Impossibile leggere il journal delle lavorazioni: %s", exc)
-            return
-        for raw_path in paths:
-            path = Path(raw_path)
-            self._state.update(path, from_job=True)
-            self._handle(str(path), bypass_stability=not path.exists())
+        try:
+            for job in iter_jobs(self._root):
+                path = Path(job["source"])
+                if path.parent.resolve() != self._root / "da_processare":
+                    continue
+                current = self._state.get(path)
+                if job.get("complete"):
+                    if (not path.exists() and current.get("action") == "process"
+                            and current.get("signature") == [job.get("size"), job.get("mtime_ns")]):
+                        self._state.update(path, status="done", source_removed=True)
+                        with self._lock:
+                            self._pending.pop(_StateStore.key(path), None)
+                    continue
+                job_signature = [job.get("size"), job.get("mtime_ns")]
+                signature = self._signature(path)
+                if ((signature is not None and list(signature) != job_signature)
+                        or (current.get("signature") and current["signature"] != job_signature)):
+                    _LOGGER.warning("Checkpoint precedente ignorato: il percorso %s è stato riutilizzato", path)
+                    continue
+                self._handle(str(path), bypass_stability=not path.exists())
+                current = self._state.get(path)
+                if current.get("status") != "done":
+                    config = job["config"]
+                    self._state.update(path, from_job=True, action="process",
+                                       signature=job_signature,
+                                       status="waiting" if path.exists() else "interrupted",
+                                       ready_at=current.get("ready_at") or time.time(),
+                                       pipeline_kwargs={"archive_max_mb": config["archive_max_mb"],
+                                                        "summary_model": config["summary_model"],
+                                                        "task_model": config["task_model"]})
+                    with self._lock:
+                        item = self._pending.get(_StateStore.key(path))
+                        if item is not None:
+                            item["resume_status"] = "interrupted"
+        except (OSError, ValueError, RuntimeError, KeyError):
+            _LOGGER.exception("Checkpoint non leggibile; nessuna ripresa automatica")
 
     def run_maintenance(self) -> None:
-        try:
-            from scripts.archive_old_calls import archive
-            from scripts.jobs import pending_call_dirs, vault_lock
-            from scripts.obsidian import indexes as obs_indexes
-            from scripts.process_call import _cleanup_source_archive
-        except (ImportError, AttributeError):
-            return
+        from scripts.archive_old_calls import archive
+        from scripts.jobs import pending_call_dirs, vault_lock
+        from scripts.obsidian import indexes
+        from scripts.process_call import _cleanup_source_archive
+        from scripts.recordings import cleanup_trash
+
         try:
             with vault_lock(self._root):
                 excluded = pending_call_dirs(self._root)
+                excluded.update(Path(entry["destination"]) for entry in self._state.entries().values()
+                                if entry.get("destination") and entry.get("status") != "done")
                 result = archive(self._root, excluded_call_dirs=excluded)
-                deleted_sources = _cleanup_source_archive(self._root)
+                _cleanup_source_archive(self._root)
+                cleanup_trash(self._root)
                 if result.get("archived"):
-                    obs_indexes.rebuild(self._root)
-            if result.get("archived") or result.get("videos_deleted") or deleted_sources:
-                _LOGGER.info(
-                    "Manutenzione vault: %s, sorgenti rimosse: %d",
-                    result,
-                    deleted_sources,
-                )
+                    indexes.rebuild(self._root)
         except Exception:
-            _LOGGER.exception("Manutenzione periodica fallita")
+            _LOGGER.exception("Manutenzione differita; verrà riprovata")
 
     def stop(self) -> None:
         self._stop_event.set()
-        self._queue.put(None)
         self._readiness.join(timeout=self._stop_timeout)
-        self._worker.join(timeout=self._stop_timeout)
-        if self._readiness.is_alive() or self._worker.is_alive():
-            _LOGGER.warning("Arresto watcher scaduto dopo %.1fs", self._stop_timeout)
 
     def on_created(self, event: FileCreatedEvent) -> None:
-        if not event.is_directory:
-            self._handle(event.src_path)
+        self._event(event)
 
     def on_moved(self, event: FileMovedEvent) -> None:
-        if not event.is_directory:
-            self._handle(event.dest_path)
+        self._event(event)
 
     def on_modified(self, event: FileModifiedEvent) -> None:
+        self._event(event)
+
+    def _event(self, event: Any) -> None:
         if not event.is_directory:
-            self._handle(event.src_path)
+            try:
+                self._handle(getattr(event, "dest_path", None) or event.src_path)
+            except Exception:
+                _LOGGER.exception("Rilevamento differito alla prossima scansione")
+
+
+def _save_details(root: Path, path: Path) -> tuple[str, Path] | None:
+    from scripts import tasks
+    from scripts.filesystem import safe_name
+
+    panel("Salva registrazione", path.name)
+    title = input_line("Titolo (Invio = nome originale, Esc = torna al menu):")
+    if title is None:
+        return None
+    title = title.strip()
+    directories = [directory for directory in tasks.discover_task_dirs(root) if not tasks.is_archived_task(directory)]
+    labels = tasks.task_labels(directories)
+    panel("Progetto", "0  Senza progetto\n" + "\n".join(f"{i}  {labels[d]}" for i, d in enumerate(directories, 1)))
+    while True:
+        choice = input_line("Progetto (numero, Esc = torna al menu):")
+        if choice is None:
+            return None
+        choice = choice.strip()
+        if choice.isdigit() and 0 <= int(choice) <= len(directories):
+            directory = directories[int(choice) - 1] if int(choice) else root / "completate" / _cfg.UNASSIGNED_CALLS_DIR_NAME
+            return safe_name(title or path.stem), directory
+        panel("Progetto", "Seleziona un numero dall'elenco.\n\n0  Senza progetto\n" +
+              "\n".join(f"{i}  {labels[d]}" for i, d in enumerate(directories, 1)))
+
+
+def _show_queue(handler: _CallHandler) -> Path | None:
+    entries = handler.snapshot()
+    names = {"waiting": "in registrazione", "ready": "da scegliere", "error": "da riprovare",
+             "interrupted": "da riprendere", "missing": "file non disponibile"}
+    panel("Coda registrazioni", "\n".join(f"{i}  {path.name} · {names.get(entry.get('status'), entry.get('status'))}"
+                                        for i, (path, entry) in enumerate(entries, 1)) or "Nessuna registrazione in attesa.")
+    value = input_line("Numero della registrazione (Invio o Esc = torna):")
+    if value is None:
+        return None
+    value = value.strip()
+    if value.isdigit() and 1 <= int(value) <= len(entries):
+        path, entry = entries[int(value) - 1]
+        if entry.get("status") in {"ready", "error", "interrupted"}:
+            return path
+        console.print("  La registrazione non è ancora disponibile.")
+    return None
+
+
+def _menu_loop(handler: _CallHandler, observer: Observer, maintenance_interval: float) -> None:
+    selected = None
+    visible_selection = None
+    rendered = None
+    last_scan = last_maintenance = time.monotonic()
+    while observer.is_alive():
+        now = time.monotonic()
+        if now - last_scan >= 5:
+            try:
+                handler.scan()
+            except OSError:
+                _LOGGER.exception("Scansione differita")
+            last_scan = now
+        if now - last_maintenance >= maintenance_interval:
+            handler.run_maintenance()
+            last_maintenance = now
+        ready = handler.snapshot(ready_only=True)
+        if selected not in [path for path, _ in ready]:
+            selected = ready[0][0] if ready else None
+        entry = next((entry for path, entry in ready if path == selected), {})
+        display = (str(selected), entry.get("status"), entry.get("action"), len(handler.snapshot()), len(ready))
+        if display != rendered:
+            if selected != visible_selection:
+                clear_input()
+                visible_selection = selected
+            if selected:
+                if entry.get("action"):
+                    options = "R  Riprendi l'operazione già scelta\nQ  Mostra coda"
+                else:
+                    options = "1  Trascrivi e riassumi\n2  Salva solo registrazione\n3  Scarta · cestino per 30 giorni\nQ  Mostra coda"
+                panel("Nuova call", f"{selected.name}\nIn attesa: {display[3]} · Pronte: {len(ready)}\n\n{options}\n\nScelta da tastiera · nessuna azione automatica")
+            else:
+                panel("In ascolto", f"Registrazioni in attesa: {display[3]}\nQ  Mostra coda · Ctrl+C per uscire")
+            rendered = display
+        key = read_key()
+        if key == "q":
+            selected = _show_queue(handler) or selected
+            rendered = None
+        elif selected and ((key in {"1", "2", "3"} and not entry.get("action"))
+                           or (key == "r" and entry.get("action"))):
+            action = entry.get("action") or {"1": "process", "2": "save", "3": "discard"}[key]
+            title, directory = "", None
+            if action == "save" and not entry.get("action"):
+                details = _save_details(handler._root, selected)
+                if details is None:
+                    rendered = None
+                    continue
+                title, directory = details
+            try:
+                handler.execute(selected, action, title=title, task_dir=directory)
+            except (OSError, ValueError) as exc:
+                _LOGGER.exception("Scelta non eseguita")
+                console.print(f"  Scelta non eseguita: {exc}", markup=False)
+            clear_input()
+            rendered = None
 
 
 def watch(root: Path | None = None, **kwargs: Any) -> None:
-    if root is None:
-        root = _cfg.VAULT_ROOT
-    root = root.resolve()
+    root = (root or _cfg.VAULT_ROOT).resolve()
     _setup_logging(root)
-
     watch_dir = root / "da_processare"
     watch_dir.mkdir(parents=True, exist_ok=True)
-    retry_limit = int(kwargs.pop("retry_limit", _DEFAULT_RETRY_LIMIT))
-    retry_backoff = float(kwargs.pop("retry_backoff_seconds", _DEFAULT_RETRY_BACKOFF_SECONDS))
+    kwargs.pop("retry_limit", None)
+    kwargs.pop("retry_backoff_seconds", None)
     readiness_interval = float(kwargs.pop("readiness_interval_seconds", _DEFAULT_READINESS_INTERVAL_SECONDS))
     stable_checks = int(kwargs.pop("stable_checks", _DEFAULT_STABLE_CHECKS))
     stop_timeout = float(kwargs.pop("stop_timeout_seconds", _DEFAULT_STOP_TIMEOUT_SECONDS))
     maintenance_interval = max(1.0, float(kwargs.pop("maintenance_interval_seconds", 900.0)))
-
-    with _instance_lock(root):
-        handler = _CallHandler(
-            root,
-            kwargs,
-            retry_limit=retry_limit,
-            retry_backoff_seconds=retry_backoff,
-            readiness_interval_seconds=readiness_interval,
-            stable_checks=stable_checks,
-            stop_timeout_seconds=stop_timeout,
-        )
-        observer = Observer()
-        observer.schedule(handler, str(watch_dir), recursive=False)
-        observer.start()
-        _LOGGER.info("Watcher avviato su: %s", watch_dir)
-        _LOGGER.info("Premi Ctrl+C per fermare.")
-        panel("Call Transcriber", f"In ascolto · le nuove registrazioni vengono elaborate automaticamente\n\nCartella: {watch_dir}\nLog: {root / 'logs' / 'watcher.log'}\n\nCtrl+C per fermare il watcher")
-
-        for existing in watch_dir.iterdir():
-            if existing.is_file() and existing.suffix.lower() in _SUPPORTED_EXT:
-                _LOGGER.info("File preesistente rilevato: %s", existing.name)
-                handler._handle(str(existing))
-        handler.refresh_pending_inputs()
-
-        last_maintenance = time.monotonic()
-        try:
-            while observer.is_alive():
-                observer.join(timeout=1)
-                if time.monotonic() - last_maintenance >= maintenance_interval:
-                    handler.refresh_pending_inputs()
+    try:
+        with _instance_lock(root):
+            handler = _CallHandler(root, kwargs, readiness_interval_seconds=readiness_interval,
+                                   stable_checks=stable_checks, stop_timeout_seconds=stop_timeout)
+            observer = None
+            started = False
+            try:
+                handler.scan()
+                handler.refresh_pending_inputs()
+                if not interactive():
+                    panel("Call Transcriber", "Terminale non interattivo: coda conservata, nessuna operazione avviata.\nAvvia scripts\\start_watcher.cmd in una console per scegliere.")
+                    return
+                observer = Observer()
+                observer.schedule(handler, str(watch_dir), recursive=False)
+                observer.start()
+                started = True
+                with screen_session():
                     handler.run_maintenance()
-                    last_maintenance = time.monotonic()
-        except KeyboardInterrupt:
-            _LOGGER.info("Arresto richiesto dall'utente")
-            observer.stop()
-        finally:
-            observer.stop()
-            observer.join(timeout=stop_timeout)
-            handler.stop()
+                    _menu_loop(handler, observer, maintenance_interval)
+            except (KeyboardInterrupt, EOFError):
+                _LOGGER.info("Arresto richiesto; coda e decisioni conservate")
+            finally:
+                if started:
+                    observer.stop()
+                    observer.join(timeout=stop_timeout)
+                handler.stop()
+    except (OSError, RuntimeError) as exc:
+        _LOGGER.exception("Watcher non avviato; registrazioni preservate")
+        panel("Avvio sospeso", str(exc), "yellow")
 
 
 def main() -> None:
@@ -452,8 +640,10 @@ def main() -> None:
     parser.add_argument("--root-path", type=Path, default=None)
     parser.add_argument("--archive-max-mb", type=float, default=None)
     parser.add_argument("--keep-video", action="store_true")
-    parser.add_argument("--retry-limit", type=int, default=_DEFAULT_RETRY_LIMIT)
-    parser.add_argument("--retry-backoff-seconds", type=float, default=_DEFAULT_RETRY_BACKOFF_SECONDS)
+    parser.add_argument("--retry-limit", type=int, default=_DEFAULT_RETRY_LIMIT,
+                        help="Compatibilità: i retry richiedono sempre una scelta dal menu.")
+    parser.add_argument("--retry-backoff-seconds", type=float, default=_DEFAULT_RETRY_BACKOFF_SECONDS,
+                        help="Compatibilità: non vengono eseguiti retry automatici.")
     parser.add_argument("--maintenance-interval-seconds", type=float, default=900.0)
     args = parser.parse_args()
 

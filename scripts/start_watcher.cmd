@@ -1,5 +1,6 @@
 @echo off
 chcp 65001 >nul
+title Call Transcriber
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..") do set "ROOT_DIR=%%~fI"
 set "PYTHON_EXE=%ROOT_DIR%\.venv\Scripts\python.exe"
@@ -7,7 +8,7 @@ set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
 pushd "%ROOT_DIR%"
-"%PYTHON_EXE%" "%SCRIPT_DIR%watch_calls.py" %*
+"%PYTHON_EXE%" -X utf8 -m scripts.watch_calls %*
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
 exit /b %EXIT_CODE%

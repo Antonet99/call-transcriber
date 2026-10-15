@@ -23,22 +23,22 @@ Set-Alias py .\.venv\Scripts\python.exe
 ### Modalita' 1 — Terminale visibile (display live)
 
 Ferma il task scheduler se attivo, poi avvia il watcher in un terminale.
-Ogni call processata mostrera' il display rich con spinner in quella finestra.
+Il menu usa la grafica Rich esistente e attende una scelta per ogni registrazione.
 
 ```powershell
 Stop-ScheduledTask -TaskName 'CallWatcher'
-.\.venv\Scripts\python.exe scripts\watch_calls.py
+.\scripts\start_watcher.cmd
 ```
 
-### Modalita' 2 — Background automatico (avvio al login)
+### Modalita' 2 — Avvio al login nella sessione interattiva
 
-Il watcher gira in background senza finestra. L'output viene scritto nel log.
+Il task avvia il launcher nella sessione utente. Il menu richiede una console interattiva: se manca stdin interattivo, la coda viene conservata e il watcher esce senza elaborare. In quel caso aprire `scripts\start_watcher.cmd` in una console. I file arrivati mentre il watcher è spento vengono rilevati all'avvio successivo.
 
 ```powershell
 # Registra il task (una tantum, o dopo ogni modifica)
 .\scripts\register_startup_task.ps1
 
-# Avvia subito senza fare logout
+# Avvia subito nella sessione utente
 Start-ScheduledTask -TaskName 'CallWatcher'
 
 # Ferma
@@ -51,7 +51,20 @@ Unregister-ScheduledTask -TaskName 'CallWatcher' -Confirm:$false
 Get-ScheduledTask -TaskName 'CallWatcher' | Select-Object TaskName, State
 ```
 
-### Monitoraggio background in tempo reale
+### Scelte del menu
+
+- `1`: trascrivi e riassumi con la pipeline attuale.
+- `2`: salva l'originale e una scheda Markdown; titolo modificabile e progetto scelto manualmente (`0` = Senza progetto, `Esc` = torna al menu). Nessuna estrazione audio o chiamata a provider.
+- `3`: sposta nel cestino recuperabile per 30 giorni, senza ulteriore conferma. La pulizia definitiva avviene durante la manutenzione del watcher attivo.
+- `Q`: mostra la coda e permette di selezionare una registrazione pronta.
+- `R`: riprende un'operazione interrotta; nessun retry automatico.
+- `Ctrl+C`: esce mantenendo coda e decisioni.
+
+Durante l'elaborazione il watcher continua a rilevare altri file. Il menu torna al termine. Al riavvio vengono recuperati ordine e scelte; una registrazione senza scelta resta in attesa.
+
+Anche le registrazioni salvate con `2` seguono l'archiviazione dopo 15 giorni e la rimozione del video: senza audio estratto, dopo tale rimozione resta solo la scheda Markdown.
+
+### Monitoraggio del log in tempo reale
 
 ```powershell
 Get-Content -Path "..\Call\vault\logs\watcher.log" -Wait -Tail 30

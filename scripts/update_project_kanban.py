@@ -8,7 +8,7 @@ from pathlib import Path
 import scripts.settings as _cfg
 from scripts.llm import common as llm_common
 from scripts.llm.providers import get_provider
-from scripts.obsidian import kanban
+from scripts.obsidian import frontmatter, kanban
 
 _CARD_RE = re.compile(r'^\-\s+\[\s*\]')
 _DIR_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}\s+\d{2}\.\d{2}\s+-\s+')
@@ -20,6 +20,8 @@ def update_from_summary(
     task_dir: Path,
     model: str = "",
 ) -> int:
+    if frontmatter.read_fields(summary_path).get("modalita") == "solo_registrazione":
+        return 0
     provider = get_provider()
     if not provider.is_available():
         raise RuntimeError("Claude CLI non disponibile: Kanban lasciata invariata.")

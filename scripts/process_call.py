@@ -27,7 +27,7 @@ from scripts.obsidian import frontmatter as fm
 from scripts.obsidian import indexes as obs_indexes
 from scripts import task_scoring
 import scripts.settings as _cfg
-from scripts.terminal import console as _con, panel, phase
+from scripts.terminal import console as _con, panel, phase, status
 
 _classification_logger = logging.getLogger(__name__)
 
@@ -143,7 +143,7 @@ def wait_stable(path: Path, stable_checks: int = 3, delay_seconds: int = 3) -> N
     same = 0
     last_size = -1
     last_mtime = 0.0
-    with _con.status(Text(f"Attendo che il file si stabilizzi: {path.name}", style="cyan"), spinner="dots"):
+    with status(f"Attendo che il file si stabilizzi: {path.name}"):
         while same < stable_checks:
             time.sleep(delay_seconds)
             stat = path.stat()
@@ -466,6 +466,7 @@ def process(
     archive_max_mb: float | None = None,
     summary_model: str = "",
     task_model: str = "",
+    expected_signature: list[int] | None = None,
 ) -> dict:
     root = (root or _cfg.VAULT_ROOT).resolve()
     resolved = input_path.resolve()
@@ -477,13 +478,16 @@ def process(
     panel("Nuova call", resolved.name)
     if resolved.exists():
         wait_stable(resolved)
+        stat = resolved.stat()
+        if expected_signature is not None and [stat.st_size, stat.st_mtime_ns] != expected_signature:
+            raise RuntimeError("La registrazione è cambiata dopo la scelta; selezionare nuovamente l'azione.")
     config = {
         "archive_max_mb": max_mb, "summary_model": summary_model or _cfg.CLAUDE_SUMMARY_MODEL,
         "task_model": task_model or _cfg.CLAUDE_TASK_MODEL,
         "provider": _cfg.LLM_PROVIDER, "transcription_model": _cfg.GROQ_WHISPER_MODEL,
     }
     with jobs.vault_lock(root):
-        state = jobs.load_job(root, resolved, config)
+        state = jobs.load_job(root, resolved, config, expected_signature=expected_signature)
         try:
             return _process_job(root, state)
         except Exception as exc:

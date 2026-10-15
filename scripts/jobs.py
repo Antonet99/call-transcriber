@@ -102,15 +102,18 @@ def pending_call_dirs(root: Path) -> set[Path]:
             if not s.get("complete") and s.get("final_dir")}
 
 
-def load_job(root: Path, source: Path, config: dict) -> dict:
+def load_job(root: Path, source: Path, config: dict, expected_signature: list[int] | None = None) -> dict:
     source_key = os.path.normcase(str(source.resolve()))
     if not source.is_file():
         candidates = [s for s in iter_jobs(root)
-                      if os.path.normcase(s["source"]) == source_key]
+                      if os.path.normcase(s["source"]) == source_key
+                      and (expected_signature is None or [s.get("size"), s.get("mtime_ns")] == expected_signature)]
         if not candidates:
             raise FileNotFoundError(f"File non trovato: {source}")
         return max(candidates, key=lambda s: s["timestamp"])
     before = source.stat()
+    if expected_signature is not None and [before.st_size, before.st_mtime_ns] != expected_signature:
+        raise RuntimeError("La registrazione è cambiata dopo la scelta: selezionare nuovamente l'azione.")
     digest = fingerprint(source)
     after = source.stat()
     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
