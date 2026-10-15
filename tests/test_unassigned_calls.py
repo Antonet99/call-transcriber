@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import date, timedelta
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 from scripts.archive_old_calls import archive
 from scripts.llm import common as llm_common
@@ -40,6 +41,27 @@ def _make_task(root: Path, name: str = "Alpha") -> Path:
 
 
 class UnassignedCallTests(unittest.TestCase):
+    def test_archived_projects_are_excluded_from_both_assignment_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            active = _make_task(root, "Beta")
+            (active / "README.md").write_text("# Beta\n", encoding="utf-8")
+            _make_task(root, "progetti_archiviati/Legacy")
+            provider = Mock()
+            provider.invoke_task_classification.return_value = "Beta"
+            self.assertEqual(_discover_task_dirs(root), [active])
+            self.assertEqual(_recognize_task(root, "alpha pipeline", provider, "test"), active)
+            summary = root / "summary.md"
+            summary.write_text("# riassunto\n## Call\nalpha pipeline", encoding="utf-8")
+            provider.invoke_task_classification.return_value = "Legacy"
+            self.assertEqual(
+                _get_task_dir(root, summary, "Call", provider, "test", transcript="alpha pipeline"),
+                root / "completate" / "Senza progetto",
+            )
+            self.assertEqual(provider.invoke_task_classification.call_count, 2)
+            for call in provider.invoke_task_classification.call_args_list:
+                self.assertNotIn("Legacy", call.args[0])
+
     def test_no_task_token_is_parsed_and_prompt_exposes_it(self) -> None:
         task_dirs = [Path("Alpha")]
 

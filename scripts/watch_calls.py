@@ -22,9 +22,11 @@ from typing import Any, Iterator
 
 from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileMovedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
+from rich.logging import RichHandler
 
 import scripts.settings as _cfg
 from scripts.filesystem import atomic_write_text
+from scripts.terminal import console, panel
 
 _LOGGER = logging.getLogger(__name__)
 _SUPPORTED_EXT = {
@@ -51,8 +53,13 @@ def _setup_logging(root: Path) -> None:
             backupCount=5,
             encoding="utf-8",
         ),
-        logging.StreamHandler(sys.stdout),
     ]
+    terminal_handler = RichHandler(console=console, show_time=False, show_path=False, show_level=True)
+    terminal_handler.setLevel(logging.WARNING)
+    terminal_handler.setFormatter(logging.Formatter("%(message)s"))
+    terminal_handler.addFilter(lambda record: not record.name.startswith("scripts.process_call"))
+    terminal_handler.addFilter(lambda record: not record.exc_info)
+    handlers.append(terminal_handler)
     logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers, force=True)
 
 
@@ -316,6 +323,7 @@ class _CallHandler(FileSystemEventHandler):
                 process(input_path=Path(path), root=self._root, **self._extra)
             except Exception as exc:
                 _LOGGER.exception("Pipeline fallita per %s", path)
+                console.print("  [red]✗ Elaborazione interrotta.[/red] Dettagli in logs/watcher.log.")
                 self._schedule_retry(path, exc)
             else:
                 self._state.remove(path)
@@ -414,6 +422,7 @@ def watch(root: Path | None = None, **kwargs: Any) -> None:
         observer.start()
         _LOGGER.info("Watcher avviato su: %s", watch_dir)
         _LOGGER.info("Premi Ctrl+C per fermare.")
+        panel("Call Transcriber", f"In ascolto · le nuove registrazioni vengono elaborate automaticamente\n\nCartella: {watch_dir}\nLog: {root / 'logs' / 'watcher.log'}\n\nCtrl+C per fermare il watcher")
 
         for existing in watch_dir.iterdir():
             if existing.is_file() and existing.suffix.lower() in _SUPPORTED_EXT:

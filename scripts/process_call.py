@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from rich.console import Console as _Console
+from rich.text import Text
 
 from scripts.audio import ffmpeg as _ffmpeg
 from scripts.llm import common as llm_common
@@ -27,8 +27,8 @@ from scripts.obsidian import frontmatter as fm
 from scripts.obsidian import indexes as obs_indexes
 from scripts import task_scoring
 import scripts.settings as _cfg
+from scripts.terminal import console as _con, panel, phase
 
-_con = _Console()
 _classification_logger = logging.getLogger(__name__)
 
 def _step(msg: str) -> None:
@@ -46,9 +46,7 @@ def _classification_event(message: str, level: int = logging.INFO) -> None:
     """Scrive gli eventi di classificazione sia in console sia nel log watcher."""
     _classification_logger.log(level, "[classification] %s", message)
     if level >= logging.WARNING:
-        _warn(message)
-    else:
-        print(f"[classification] {message}")
+        _warn("Classificazione incerta: uso Senza progetto. Dettagli nel log." if message.startswith("Classificazione finale") else "Riconoscimento preliminare non disponibile; proseguo con la classificazione finale.")
 
 _UTF8 = "utf-8"
 _AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".webm", ".wma"}
@@ -142,21 +140,19 @@ def _read_cached_transcript(transcript_path: Path) -> str:
 
 
 def wait_stable(path: Path, stable_checks: int = 3, delay_seconds: int = 3) -> None:
-    deadline = time.monotonic() + _cfg.STABLE_TIMEOUT_SECONDS
     same = 0
     last_size = -1
     last_mtime = 0.0
-    while same < stable_checks:
-        if time.monotonic() >= deadline:
-            raise TimeoutError("Il file non si è stabilizzato entro il timeout.")
-        time.sleep(delay_seconds)
-        stat = path.stat()
-        if stat.st_size == last_size and stat.st_mtime == last_mtime:
-            same += 1
-        else:
-            same = 0
-            last_size = stat.st_size
-            last_mtime = stat.st_mtime
+    with _con.status(Text(f"Attendo che il file si stabilizzi: {path.name}", style="cyan"), spinner="dots"):
+        while same < stable_checks:
+            time.sleep(delay_seconds)
+            stat = path.stat()
+            if stat.st_size == last_size and stat.st_mtime == last_mtime:
+                same += 1
+            else:
+                same = 0
+                last_size = stat.st_size
+                last_mtime = stat.st_mtime
 
 
 def _extract_title_from_summary(summary_path: Path) -> str:
@@ -261,7 +257,7 @@ def _read_text(path: Path, limit: int = 12000) -> str:
 
 
 def _discover_task_dirs(root: Path) -> list[Path]:
-    return tasks.discover_task_dirs(root)
+    return [path for path in tasks.discover_task_dirs(root) if not tasks.is_archived_task(path)]
 
 
 def _task_contexts(task_dirs: list[Path]) -> dict[str, str]:
@@ -274,7 +270,7 @@ def _task_contexts(task_dirs: list[Path]) -> dict[str, str]:
 
 def _log_task_scores(scores: list[task_scoring.TaskScore]) -> None:
     for line in task_scoring.format_scores(scores).splitlines():
-        print(f"[task-score] {line}")
+        _classification_logger.info("[task-score] %s", line)
 
 
 def _recognize_task(
@@ -478,6 +474,7 @@ def process(
         raise ValueError("archive_max_mb deve essere positivo e finito.")
     if resolved.suffix.lower() not in _AUDIO_EXT | _VIDEO_EXT:
         raise ValueError(f"Estensione non supportata: {resolved.suffix}")
+    panel("Nuova call", resolved.name)
     if resolved.exists():
         wait_stable(resolved)
     config = {
@@ -520,12 +517,13 @@ def _process_job(root: Path, state: dict) -> dict:
         audio = call_dir / "audio.m4a"
         if not state.get("audio_ready") or not audio.is_file():
             temp_audio = call_dir / "audio.part.m4a"
-            if is_video:
-                _ffmpeg.extract_audio(source, temp_audio)
-            elif source.suffix.lower() == ".m4a":
-                shutil.copy2(source, temp_audio)
-            else:
-                _ffmpeg.convert_to_m4a(source, temp_audio)
+            with phase("1/6 · Preparazione audio"):
+                if is_video:
+                    _ffmpeg.extract_audio(source, temp_audio)
+                elif source.suffix.lower() == ".m4a":
+                    shutil.copy2(source, temp_audio)
+                else:
+                    _ffmpeg.convert_to_m4a(source, temp_audio)
             if temp_audio.stat().st_size == 0:
                 raise ValueError("Audio estratto vuoto.")
             temp_audio.replace(audio)
@@ -534,7 +532,8 @@ def _process_job(root: Path, state: dict) -> dict:
         transcript_path = call_dir / "trascrizione.txt"
         if not state.get("transcript_ready"):
             from scripts.transcribe_with_groq import transcribe
-            transcript = transcribe(audio, transcript_path, model=config["transcription_model"])
+            with phase("2/6 · Trascrizione"):
+                transcript = transcribe(audio, transcript_path, model=config["transcription_model"])
             if not transcript.strip():
                 raise ValueError("Trascrizione vuota: riassunto non generato.")
             atomic_write_text(transcript_path, transcript)
@@ -546,25 +545,28 @@ def _process_job(root: Path, state: dict) -> dict:
             raise ValueError("La trascrizione del checkpoint è stata alterata.")
 
         if "preliminary_task" not in state:
-            preliminary = _recognize_task(root, transcript, provider, config["task_model"])
+            with phase("3/6 · Riconoscimento progetto"):
+                preliminary = _recognize_task(root, transcript, provider, config["task_model"])
             checkpoint(preliminary_task=str(preliminary) if preliminary else "")
         preliminary = Path(state["preliminary_task"]) if state["preliminary_task"] else None
         summary_path = call_dir / state.get("summary_name", "riassunto.md")
         if not summary_path.exists() and state.get("summary_name"):
             summary_path = call_dir / "riassunto.md"
         if not state.get("summary_ready"):
-            _invoke_summary(provider, transcript_path, summary_path,
-                            Path(__file__).parent / "prompt_riassunto_call.md", config["summary_model"],
-                            _project_instructions_path(), _global_index_path(root),
-                            preliminary / "README.md" if preliminary else None)
+            with phase("4/6 · Riassunto e revisione"):
+                _invoke_summary(provider, transcript_path, summary_path,
+                                Path(__file__).parent / "prompt_riassunto_call.md", config["summary_model"],
+                                _project_instructions_path(), _global_index_path(root),
+                                preliminary / "README.md" if preliminary else None)
             checkpoint(summary_ready=True)
         if not summary_path.is_file():
             raise ValueError("Checkpoint riassunto mancante.")
         if not state.get("task_dir"):
             title = _extract_title_from_summary(summary_path) or _safe_name(source.stem)
             title = _safe_name(_add_people_to_title(title, fm.get_people(summary_path)))
-            task_dir = _get_task_dir(root, summary_path, title, provider, config["task_model"],
-                                     transcript=transcript, preliminary_task=preliminary)
+            with phase("5/6 · Classificazione finale"):
+                task_dir = _get_task_dir(root, summary_path, title, provider, config["task_model"],
+                                         transcript=transcript, preliminary_task=preliminary)
             labels = tasks.task_labels(_discover_task_dirs(root))
             task_name = labels.get(task_dir, "")
             checkpoint(task_dir=str(task_dir), title=title, task_name=task_name)
@@ -586,7 +588,8 @@ def _process_job(root: Path, state: dict) -> dict:
         summary_path = _rename_summary(summary_path, title)
         archive_audio = call_dir / "audio_compresso.m4a"
         if not state.get("compressed") or not archive_audio.is_file():
-            _ffmpeg.compress_audio(audio, archive_audio, config["archive_max_mb"], _ffmpeg.get_duration(audio))
+            with phase("6/6 · Compressione audio"):
+                _ffmpeg.compress_audio(audio, archive_audio, config["archive_max_mb"], _ffmpeg.get_duration(audio))
             checkpoint(compressed=True)
         if not 0 < archive_audio.stat().st_size <= config["archive_max_mb"] * 1_000_000:
             raise ValueError("Audio archivio vuoto o oltre la soglia.")
@@ -625,12 +628,14 @@ def _process_job(root: Path, state: dict) -> dict:
         checkpoint(source_archived=True)
     (call_dir / "audio.m4a").unlink(missing_ok=True)
     if not state.get("indexed"):
-        obs_indexes.rebuild(root)
+        with phase("Aggiornamento indici"):
+            obs_indexes.rebuild(root)
         checkpoint(indexed=True)
     if not state.get("kanban_done"):
         if task_dir != _unassigned_calls_dir(root):
             from scripts.update_project_kanban import update_from_summary
-            update_from_summary(summary_path, task_dir)
+            with phase("Aggiornamento Kanban"):
+                update_from_summary(summary_path, task_dir)
         checkpoint(kanban_done=True)
     result = {
         "call_directory": str(call_dir), "task_directory": str(task_dir),
@@ -648,7 +653,7 @@ def _process_job(root: Path, state: dict) -> dict:
             obs_indexes.rebuild(root)
     except Exception:
         logging.exception("Manutenzione differita; call %s completata", state["id"])
-    _ok(f"Completato: {call_dir.name}")
+    panel("Call completata", f"{call_dir.name}\n\nProgetto: {state['task_name'] or 'Senza progetto'}\nSalvata in: {call_dir}", "green")
     return result
 
 

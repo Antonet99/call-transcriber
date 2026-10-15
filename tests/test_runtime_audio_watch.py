@@ -5,10 +5,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scripts.audio import ffmpeg
 from scripts import filesystem
+from scripts import process_call
 from scripts.subprocesses import run_command
 from scripts.watch_calls import _StateStore
 
@@ -47,6 +48,20 @@ class SubprocessRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "ciao")
+
+
+class FileStabilityTests(unittest.TestCase):
+    def test_long_recording_waits_until_size_and_mtime_stop_changing(self) -> None:
+        source = Mock(spec=Path)
+        source.name = "recording.mp4"
+        growing = [Mock(st_size=index + 1, st_mtime=index + 1) for index in range(50)]
+        final = growing[-1]
+        source.stat.side_effect = growing + [final] * 3
+        with patch.object(process_call.time, "sleep") as sleep, patch.object(process_call._con, "status") as status:
+            process_call.wait_stable(source)
+        self.assertEqual(sleep.call_count, 53)
+        status.return_value.__enter__.assert_called_once()
+        status.return_value.__exit__.assert_called_once()
 
 
 class WatchStateTests(unittest.TestCase):

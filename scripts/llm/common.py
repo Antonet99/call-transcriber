@@ -78,9 +78,10 @@ def build_task_prompt(
     trimmed_summary = _fm.strip_frontmatter(summary)[:_cfg.TASK_PROMPT_SUMMARY_TRUNCATE]
     trimmed_transcript = transcript[:_cfg.TASK_PROMPT_TRANSCRIPT_TRUNCATE]
     sections = [
-        "Devi assegnare una call a una delle task elencate, includendo anche le task archiviate, "
+        "Devi assegnare una call a una delle task attive elencate, escludendo le task archiviate, "
         f"oppure usare esattamente {NO_TASK_TOKEN} se la call non è collegata a nessun progetto.",
         "Usa il contenuto della trascrizione o del riassunto e l'indice globale.",
+        "L'indice può contenere progetti storici: scegli esclusivamente tra le task disponibili elencate.",
         f"Rispondi solo con il nome esatto di una task tra quelle elencate oppure {NO_TASK_TOKEN}. "
         "Usa quest'ultimo per discussioni tecniche generiche, confronti tra colleghi "
         "e call senza un progetto riconoscibile. Non aggiungere spiegazioni, virgolette, "
