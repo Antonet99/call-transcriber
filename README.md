@@ -133,6 +133,10 @@ Unregister-ScheduledTask -TaskName 'CallWatcher' -Confirm:$false  # rimuovi
 
 Il terminale usa una schermata che si aggiorna sul posto mantenendo lo stile ciano. Le righe selezionabili sono evidenziate; gli elenchi lunghi scorrono con la selezione. L'esito dell'ultima operazione resta visibile in forma compatta.
 
+I colori distinguono azioni e stati: verde per completamenti e registrazioni salvate, ambra per attese, riprese e cestino, rosso per errori e scarto, viola per progetti e progressi. Le date sono azzurre e i tasti rapidi hanno etichette colorate ad alto contrasto. La selezione resta evidenziata in ciano.
+
+Ctrl+C arresta il watcher e conserva lo stato, senza chiedere `Terminare il processo batch (S/N)?`. Il launcher mantiene la stessa console e il codice di uscita di Python. La chiusura batch usa `CALL` sulla stessa riga dell'avvio, accorgimento adottato anche dal [wrapper Gradle](https://github.com/gradle/gradle/blob/master/gradlew.bat); gli argomenti con spazi o punti esclamativi restano invariati.
+
 | Tasto | Azione |
 |---|---|
 | `↑` / `↓` | Sposta la selezione. |
@@ -317,6 +321,16 @@ Per archiviare anche le call vecchie prima di rigenerare gli indici:
 Registrazioni, audio compressi, trascrizioni, riassunti, log, vault generati e `.env` sono esclusi da Git.
 
 ## Troubleshooting
+
+### Misurare le prestazioni senza usare registrazioni reali
+
+Il benchmark confronta scansione iniziale, scansione ripetuta e catalogo con la revisione Git precedente alle ottimizzazioni. Usa soltanto file sintetici in cartelle temporanee e blocca accesso al vault operativo, `.env` e connessioni di rete nel processo Python. Non avvia il watcher reale o i provider.
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -B benchmarks\watcher_performance.py
+```
+
+Per una verifica breve aggiungere `--runs 1 --sizes 10 --catalog-sizes 20`. Il confronto completo usa cinque esecuzioni per versione, alterna l'ordine prima/dopo e stampa mediana, minimo, massimo, tempo CPU e campioni in JSON. `--temp-dir` permette di scegliere dove creare i dati sintetici. La cache del sistema operativo non viene svuotata: i risultati non misurano un avvio a disco freddo, la sincronizzazione OneDrive o la latenza dei provider. I controlli di stabilita' e il salvataggio immediato di journal e backup restano invariati.
 
 **`GROQ_API_KEY` mancante**: aggiungi la chiave al file `.env`.
 

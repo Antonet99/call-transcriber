@@ -18,6 +18,7 @@ from typing import Any, Iterator
 from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileMovedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 from rich.logging import RichHandler
+from rich.text import Text
 
 import scripts.settings as _cfg
 from scripts.filesystem import atomic_write_text
@@ -164,14 +165,17 @@ class _StateStore:
     def update(self, path: Path | str, **values: Any) -> dict[str, Any]:
         key = self.key(path)
         with self._lock:
-            old = copy.deepcopy(self._entries)
+            old = copy.deepcopy(self._entries.get(key))
             entry = self._entries.setdefault(key, {})
             entry.update(values)
             entry["updated_at"] = time.time()
             try:
                 self._save()
             except OSError:
-                self._entries = old
+                if old is None:
+                    self._entries.pop(key, None)
+                else:
+                    self._entries[key] = old
                 raise
             return copy.deepcopy(entry)
 
@@ -247,10 +251,14 @@ class _CallHandler(FileSystemEventHandler):
 
     def _handle(self, path: str, *, bypass_stability: bool = False) -> None:
         source = Path(os.path.abspath(path))
-        if (source.suffix.lower() not in _SUPPORTED_EXT or source.is_symlink()
-                or source.parent.resolve() != self._root / "da_processare"):
+        if source.suffix.lower() not in _SUPPORTED_EXT:
             return
         key = _StateStore.key(source)
+        with self._lock:
+            if key in self._pending:
+                return
+        if source.is_symlink() or source.parent.resolve() != self._root / "da_processare":
+            return
         with self._lock:
             if key in self._pending:
                 return
@@ -285,14 +293,18 @@ class _CallHandler(FileSystemEventHandler):
         watch_dir = self._root / "da_processare"
         paths = []
         for path in watch_dir.iterdir():
+            if path.suffix.lower() not in _SUPPORTED_EXT:
+                continue
             signature = self._signature(path)
             if signature is not None:
                 paths.append((signature[1], path.name, path))
+        seen = set()
         for _, _, path in sorted(paths):
             if path.is_file():
+                seen.add(_StateStore.key(path))
                 self._handle(str(path))
         for path, entry in self._state.entries().items():
-            if entry.get("status") != "done":
+            if entry.get("status") != "done" and self._state.key(path) not in seen:
                 self._handle(path, bypass_stability=bool(entry.get("destination") and not Path(path).exists()))
 
     def _check_readiness(self) -> None:
@@ -510,8 +522,8 @@ def _save_details(root: Path, path: Path) -> tuple[str, Path] | None:
             continue
         directories = [directory for directory in tasks.discover_task_dirs(root) if not tasks.is_archived_task(directory)]
         labels = tasks.task_labels(directories)
-        choices = [Choice(root / "completate" / _cfg.UNASSIGNED_CALLS_DIR_NAME, "Senza progetto")]
-        choices.extend(Choice(directory, labels[directory]) for directory in directories)
+        choices = [Choice(root / "completate" / _cfg.UNASSIGNED_CALLS_DIR_NAME, "Senza progetto", style="#94a3b8")]
+        choices.extend(Choice(directory, labels[directory], style="#c4b5fd") for directory in directories)
         directory = select_item("Progetto", choices, message=title)
         if directory is not None:
             return safe_name(title), directory
@@ -521,8 +533,11 @@ def _show_queue(handler: _CallHandler) -> Path | None:
     names = {"waiting": "in registrazione", "ready": "da scegliere", "error": "da riprovare",
              "interrupted": "da riprendere", "missing": "file non disponibile"}
     def choices():
-        return [Choice(path, f"{path.name} · {names.get(entry.get('status'), entry.get('status'))}",
-                       enabled=entry.get("status") in {"ready", "error", "interrupted"})
+        colors = {"waiting": "#fbbf24", "ready": "#86efac", "error": "#fb7185", "interrupted": "#fbbf24"}
+        return [Choice(path, Text.assemble((path.name, "bold #f8fafc"),
+                                          (f" · {names.get(entry.get('status'), entry.get('status'))}", colors.get(entry.get("status"), "#94a3b8"))),
+                       enabled=entry.get("status") in {"ready", "error", "interrupted"},
+                       style=colors.get(entry.get("status"), "#94a3b8"))
                 for path, entry in handler.snapshot()]
     return select_item("Coda registrazioni", choices)
 
@@ -544,31 +559,34 @@ def _show_unprocessed(handler: _CallHandler) -> None:
             for item in items:
                 if item["category"] != category:
                     continue
-                label = f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(item['timestamp']))} · {item['title']}"
+                color = "#86efac" if category == "saved" else "#fbbf24"
+                label = Text(time.strftime('%Y-%m-%d %H:%M', time.localtime(item['timestamp'])), style="#93c5fd")
+                label.append(" · ", style="#64748b")
+                label.append(item["title"], style="bold #f8fafc")
                 if category == "saved":
-                    label += f" · {item.get('task_name') or 'Senza progetto'}"
+                    label.append(f" · {item.get('task_name') or 'Senza progetto'}", style="#c4b5fd")
                 if item.get("status") == "interrupted":
-                    label += " · Da riprendere"
-                choices.append(Choice(item["id"], label, group))
+                    label.append(" · Da riprendere", style="bold #fbbf24")
+                choices.append(Choice(item["id"], label, group, style=color))
         selected = select_item("Registrazioni non elaborate", choices, message=message, groups=groups)
         if selected is None:
             return
         item = next(item for item in items if item["id"] == selected)
-        detail = f"{item['title']}\n{item['source']}"
+        detail = Text.assemble((item["title"], "bold #f8fafc"), (f"\n{item['source']}", "#93c5fd"))
         if item["category"] == "saved":
-            detail += f"\nProgetto: {item.get('task_name') or 'Senza progetto'} · titolo e cartella vengono mantenuti."
+            detail.append(f"\nProgetto: {item.get('task_name') or 'Senza progetto'} · titolo e cartella vengono mantenuti.", style="#c4b5fd")
         else:
             expires = item.get("discarded_at", time.time()) + 30 * 86400
-            detail += f"\nNel cestino fino al {time.strftime('%d/%m/%Y', time.localtime(expires))}."
+            detail.append(f"\nNel cestino fino al {time.strftime('%d/%m/%Y', time.localtime(expires))}.", style="#fbbf24")
         label = "Riprendi elaborazione" if item.get("status") == "interrupted" else "Trascrivi e riassumi"
-        if select_item("Elabora registrazione", [Choice("process", label)], message=detail) is None:
+        if select_item("Elabora registrazione", [Choice("process", label, style="#86efac")], message=detail) is None:
             continue
         try:
             process_recording(handler._root, item, **handler._extra)
-            message = "Elaborazione completata. La registrazione è stata rimossa dall'elenco."
+            message = Text("Elaborazione completata. La registrazione è stata rimossa dall'elenco.", style="bold #86efac")
         except Exception as exc:
             _LOGGER.exception("Elaborazione su richiesta interrotta")
-            message = f"Elaborazione non completata: {exc}. Stato conservato; seleziona nuovamente la registrazione per riprendere."
+            message = Text(f"Elaborazione non completata: {exc}. Stato conservato; seleziona nuovamente la registrazione per riprendere.", style="bold #fb7185")
         finally:
             clear_input()
 
@@ -604,13 +622,13 @@ def _menu_loop(handler: _CallHandler, observer: Observer, maintenance_interval: 
         choices = []
         if selected:
             if entry.get("action"):
-                choices.append(Choice(entry["action"], "Riprendi l'operazione già scelta"))
+                choices.append(Choice(entry["action"], "Riprendi l'operazione già scelta", style="#fbbf24"))
             else:
-                choices.extend([Choice("process", "Trascrivi e riassumi"),
-                                Choice("save", "Salva solo registrazione"),
-                                Choice("discard", "Scarta · cestino per 30 giorni")])
-        choices.extend([Choice("queue", "Nuove registrazioni in attesa · Q"),
-                        Choice("catalog", "Registrazioni non elaborate · N")])
+                choices.extend([Choice("process", "Trascrivi e riassumi", style="#86efac"),
+                                Choice("save", "Salva solo registrazione", style="#93c5fd"),
+                                Choice("discard", "Scarta · cestino per 30 giorni", style="#fb7185")])
+        choices.extend([Choice("queue", "Nuove registrazioni in attesa · Q", style="#67e8f9"),
+                        Choice("catalog", "Registrazioni non elaborate · N", style="#c4b5fd")])
         selection.update(choices)
         if focus is not None:
             selection.index = next(i for i, choice in enumerate(choices) if choice.value == focus)

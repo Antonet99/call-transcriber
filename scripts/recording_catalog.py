@@ -130,8 +130,8 @@ def _media_candidates(root: Path, directory: Path, title: str) -> list[Path]:
     result = []
     for path in children:
         name = path.name.casefold()
-        if (path.is_symlink() or not path.is_file() or not _safe_under(root, path)
-                or path.suffix.casefold() not in _MEDIA_EXTENSIONS):
+        if (path.suffix.casefold() not in _MEDIA_EXTENSIONS
+                or path.is_symlink() or not path.is_file() or not _safe_under(root, path)):
             continue
         stem = path.stem.casefold()
         if (".part." in name and stem != title.casefold()) or (name == "audio.m4a" and stem != title.casefold()):
@@ -145,7 +145,7 @@ def _media_candidates(root: Path, directory: Path, title: str) -> list[Path]:
 def _saved_directories(root: Path):
     completed = root / "completate"
     roots = [completed / "Task", completed / "Senza progetto"]
-    stack = [path for path in roots if _safe_under(root, path) and path.is_dir()]
+    stack = [path for path in roots if path.is_dir()]
     visited: set[str] = set()
     while stack:
         directory = stack.pop()
@@ -163,7 +163,7 @@ def _saved_directories(root: Path):
             continue
         stack.extend(
             child for child in children
-            if child.is_dir() and not child.is_symlink() and _safe_under(root, child)
+            if child.is_dir() and not child.is_symlink()
         )
 
 

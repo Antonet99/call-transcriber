@@ -65,6 +65,24 @@ class FileStabilityTests(unittest.TestCase):
 
 
 class WatchStateTests(unittest.TestCase):
+    def test_failed_entry_update_preserves_all_entries_and_persisted_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            store = _StateStore(root)
+            first, second = root / "first.m4a", root / "second.m4a"
+            store.update(first, status="ready", pipeline_kwargs={"nested": [1, 2]})
+            store.update(second, status="waiting")
+            before = store.entries()
+
+            with patch.object(store, "_save", side_effect=OSError("disk unavailable")):
+                with self.assertRaises(OSError):
+                    store.update(first, status="processing", pipeline_kwargs={"nested": [3]})
+                with self.assertRaises(OSError):
+                    store.update(root / "new.m4a", status="waiting")
+
+            self.assertEqual(store.entries(), before)
+            self.assertEqual(_StateStore(root).entries(), before)
+
     def test_failure_state_survives_new_watcher_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

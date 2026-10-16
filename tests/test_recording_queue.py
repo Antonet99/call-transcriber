@@ -46,6 +46,33 @@ class RecordingQueueTests(unittest.TestCase):
         self.assertEqual(entry["status"], "ready")
         process.assert_not_called()
 
+    def test_duplicate_scan_still_detects_growth_and_requires_three_stable_checks(self):
+        path = self.add_file()
+        self.make_ready(path)
+        with path.open("ab") as recording:
+            recording.write(b"still growing")
+        self.handler.on_modified(FileModifiedEvent(str(path)))
+        self.handler.scan()
+        self.handler._check_readiness()
+        self.assertEqual(self.handler._state.get(path)["status"], "waiting")
+        self.handler._check_readiness()
+        self.assertEqual(self.handler._state.get(path)["status"], "waiting")
+        self.handler._check_readiness()
+        self.assertEqual(self.handler._state.get(path)["status"], "ready")
+        self.assertEqual(len(self.handler.snapshot()), 1)
+
+    def test_scan_preserves_chronological_order_and_rejects_external_sources(self):
+        later = self.add_file("a-later.m4a")
+        earlier = self.add_file("z-earlier.m4a")
+        os.utime(earlier, ns=(1_000_000_000, 1_000_000_000))
+        os.utime(later, ns=(2_000_000_000, 2_000_000_000))
+        outside = self.root / "outside.m4a"
+        outside.write_bytes(b"outside watched folder")
+        self.handler._handle(str(outside))
+        self.handler.scan()
+        entries = self.handler._state.entries()
+        self.assertEqual(list(entries), [watcher._StateStore.key(earlier), watcher._StateStore.key(later)])
+
     def test_new_arrivals_and_duplicate_events_keep_fifo_queue(self):
         first = self.add_file("z-first.m4a")
         self.handler.on_created(FileCreatedEvent(str(first)))

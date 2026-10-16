@@ -398,6 +398,36 @@ class RecordingCatalogTests(unittest.TestCase):
         metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
         self.assertEqual([], catalog.list_unprocessed(self.root))
 
+    def test_catalog_does_not_enter_directory_resolving_outside_vault(self) -> None:
+        directory, _source, _hash = self._saved()
+        original_resolve = Path.resolve
+        original_iterdir = Path.iterdir
+
+        def resolve(path, *args, **kwargs):
+            if path == directory:
+                return self.root.parent / "external"
+            return original_resolve(path, *args, **kwargs)
+
+        def iterdir(path):
+            if path == directory:
+                raise AssertionError("unsafe directory entered")
+            return original_iterdir(path)
+
+        with patch.object(Path, "resolve", resolve), patch.object(Path, "iterdir", iterdir):
+            self.assertEqual([], catalog.list_unprocessed(self.root))
+
+    def test_catalog_rejects_media_resolving_outside_vault(self) -> None:
+        _directory, source, _hash = self._saved()
+        original_resolve = Path.resolve
+
+        def resolve(path, *args, **kwargs):
+            if path == source:
+                return self.root.parent / "external.m4a"
+            return original_resolve(path, *args, **kwargs)
+
+        with patch.object(Path, "resolve", resolve):
+            self.assertEqual([], catalog.list_unprocessed(self.root))
+
     def test_solo_registrazione_note_does_not_initialize_provider_for_kanban(self) -> None:
         summary = self.task / "2026-10-15 09.30 - Review sync" / "Review sync.md"
         summary.parent.mkdir()

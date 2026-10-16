@@ -15,6 +15,17 @@ from rich.text import Text
 
 console = Console()
 _screen = None
+_TEXT = "#e2e8f0"
+_COLORS = {"cyan": "#67e8f9", "green": "#86efac", "yellow": "#fbbf24", "red": "#fb7185"}
+
+
+def _footer() -> Text:
+    return Text.assemble(
+        (" ↑/↓ ", "bold #67e8f9 on #164e63"), (" Seleziona  ", _TEXT),
+        (" Invio ", "bold #86efac on #14532d"), (" Conferma  ", _TEXT),
+        (" Esc ", "bold #fcd34d on #713f12"), (" Indietro  ", _TEXT),
+        (" Ctrl+C ", "bold #fda4af on #881337"), (" Esci", _TEXT),
+    )
 
 
 class _Screen:
@@ -30,18 +41,18 @@ class _Screen:
     def render(self):
         content = []
         if self.prompt:
-            content.extend([Text(self.prompt, style="cyan"), Text("")])
-        content.append(self.message if isinstance(self.message, Text) else Text(self.message))
-        content.extend(Text(step, style="green") for step in self.steps)
+            content.extend([Text(self.prompt, style="bold #c4b5fd"), Text("")])
+        content.append(self.message if isinstance(self.message, Text) else Text(self.message, style=_TEXT))
+        content.extend(Text(step, style="bold #86efac") for step in self.steps)
         if self.spinner is not None:
             content.append(self.spinner)
         return Group(
-            Rule(Text("Call Transcriber", style="bold cyan"), style="cyan"),
+            Rule(Text("Call Transcriber", style="bold #67e8f9"), style="#38bdf8"),
             Text(""),
-            Panel(Group(*content), title=Text(self.title, style="bold"),
-                  border_style=self.color, padding=(1, 2), height=max(6, console.height - 6)),
-            Text(self.notice, style="green", overflow="ellipsis", no_wrap=True),
-            Text("↑/↓ Seleziona · Invio Conferma · Esc Indietro · Ctrl+C Esci", style="dim"),
+            Panel(Group(*content), title=Text(self.title, style=f"bold {_COLORS.get(self.color, self.color)}"),
+                  border_style=_COLORS.get(self.color, self.color), padding=(1, 2), height=max(6, console.height - 6)),
+            Text(self.notice, style="bold #86efac", overflow="ellipsis", no_wrap=True),
+            _footer(),
         )
 
 
@@ -148,7 +159,7 @@ def input_line(label: str, initial: str = "") -> str | None:
     with _keyboard_mode():
         try:
             if _screen is None:
-                console.print(Text(label), end=" ")
+                console.print(Text(label, style="bold #c4b5fd"), end=" ")
             while True:
                 if _screen is not None:
                     _screen.prompt = f"{label}\n> {value[:cursor]}▌{value[cursor:]}"
@@ -197,16 +208,18 @@ def panel(title: str, message: str | Text, color: str = "cyan") -> None:
         if color == "green":
             _screen.notice = f"{title} · {str(message).replace(chr(10), ' ')}"
         return
-    console.print(Panel(message if isinstance(message, Text) else Text(message), title=Text(title, style="bold"), border_style=color, padding=(1, 2)))
+    accent = _COLORS.get(color, color)
+    console.print(Panel(message if isinstance(message, Text) else Text(message, style=_TEXT),
+                        title=Text(title, style=f"bold {accent}"), border_style=accent, padding=(1, 2)))
 
 
 @contextmanager
 def status(label: str):
     if _screen is None:
-        with console.status(Text(label, style="cyan"), spinner="dots"):
+        with console.status(Text(label, style="bold #fbbf24"), spinner="dots", spinner_style="#c4b5fd"):
             yield
         return
-    _screen.spinner = Spinner("dots", text=Text(label, style="cyan"))
+    _screen.spinner = Spinner("dots", text=Text(label, style="bold #fbbf24"), style="#c4b5fd")
     try:
         yield
     finally:
@@ -222,15 +235,16 @@ def phase(label: str):
     if _screen is not None:
         _screen.steps.append(completed)
     else:
-        console.print(Text(completed, style="green"))
+        console.print(Text(completed, style="bold #86efac"))
 
 
 @dataclass(frozen=True)
 class Choice:
     value: Any
-    label: str
+    label: str | Text
     group: str = ""
     enabled: bool = True
+    style: str = _TEXT
 
 
 class Selection:
@@ -254,38 +268,47 @@ class Selection:
             return self.choices[self.index].value
         return None
 
-    def render(self, message: str = "") -> Text:
+    def render(self, message: str | Text = "") -> Text:
         rows = []
         selected_row = 0
         groups = self.groups or tuple(dict.fromkeys(choice.group for choice in self.choices)) or ("",)
         for group in groups:
             if group:
-                rows.append((group, "bold cyan"))
+                accent = next((choice.style for choice in self.choices if choice.group == group), "#67e8f9")
+                rows.append(Text(group, style=f"bold {accent}"))
             entries = [(i, choice) for i, choice in enumerate(self.choices) if choice.group == group]
             if not entries:
-                rows.append(("  Nessuna registrazione disponibile.", "dim"))
+                rows.append(Text("  Nessuna registrazione disponibile.", style="#94a3b8"))
             for i, choice in entries:
                 if i == self.index:
                     selected_row = len(rows)
-                style = "bold black on cyan" if i == self.index else ("" if choice.enabled else "dim")
-                rows.append((f"{'›' if i == self.index else ' '} {choice.label}", style))
+                style = "bold #0f172a on #67e8f9" if i == self.index else (choice.style if choice.enabled else "#94a3b8")
+                row = Text(f"{'›' if i == self.index else ' '} ", style=style)
+                label = choice.label
+                if i == self.index:
+                    label = label.plain if isinstance(label, Text) else label
+                row.append(label)
+                rows.append(row)
             if group:
-                rows.append(("", ""))
-        height = max(3, console.height - 13 - message.count("\n"))
+                rows.append(Text())
+        message = message if isinstance(message, Text) else Text(message, style=_TEXT)
+        height = max(3, console.height - 13 - message.plain.count("\n"))
         start = max(0, min(selected_row - height // 2, len(rows) - height))
         text = Text(no_wrap=True, overflow="ellipsis")
         if message:
-            text.append(message + "\n\n")
+            text.append(message)
+            text.append("\n\n")
         if start:
-            text.append("  ↑ Altri elementi\n", style="dim")
-        for label, style in rows[start:start + height]:
-            text.append(label + "\n", style=style)
+            text.append("  ↑ Altri elementi\n", style="#67e8f9")
+        for row in rows[start:start + height]:
+            text.append(row)
+            text.append("\n")
         if start + height < len(rows):
-            text.append("  ↓ Altri elementi", style="dim")
+            text.append("  ↓ Altri elementi", style="#67e8f9")
         return text
 
 
-def select_item(title: str, choices, *, message: str = "",
+def select_item(title: str, choices, *, message: str | Text = "",
                 groups: tuple[str, ...] = ()):
     clear_input()
     selection = Selection(choices() if callable(choices) else choices, groups)

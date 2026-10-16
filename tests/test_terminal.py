@@ -6,11 +6,23 @@ import unittest
 from unittest.mock import Mock, patch
 
 from rich.console import Console
+from rich.text import Text
 
 from scripts import terminal, watch_calls
 
 
 class TerminalTests(unittest.TestCase):
+    def test_styled_choices_preserve_literal_labels_and_readable_selection(self):
+        label = Text("[Review] · Progetto Alpha", style="bold #f8fafc")
+        selection = terminal.Selection([terminal.Choice("call", label, "Salvate", style="#86efac")])
+        console = Console(file=StringIO(), force_terminal=True, color_system="truecolor", width=100)
+        rendered = selection.render(Text("Seleziona una call", style="#c4b5fd"))
+        self.assertIn("[Review] · Progetto Alpha", rendered.plain)
+        self.assertEqual(selection.handle("enter"), "call")
+        styles = [segment.style for segment in console.render(rendered) if "[Review]" in segment.text]
+        self.assertTrue(styles)
+        self.assertTrue(all(style.bgcolor is not None and style.color.get_truecolor().hex == "#0f172a" for style in styles))
+
     def test_escape_cancels_input_immediately(self):
         with patch.object(terminal, "console", Console(file=StringIO())), \
                 patch.object(terminal, "_keyboard_mode", return_value=nullcontext()), \
