@@ -16,6 +16,7 @@ class RecoveryTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch("scripts.config_verification.require_ready"))
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         self.vault = self.root / "vault"
         self.provider = Mock()
@@ -116,6 +117,30 @@ class RecoveryTests(unittest.TestCase):
         with jobs.vault_lock(self.vault):
             with jobs.vault_lock(self.vault):
                 self.assertTrue((self.vault / ".pipeline" / "vault.lock").is_file())
+
+    def test_resume_uses_original_preferences_after_menu_changes(self):
+        source = self.source()
+        with patch.object(pc._cfg, "CLAUDE_SUMMARY_MODEL", "original-model"), \
+                patch.object(pc._cfg, "CLAUDE_SUMMARY_EFFORT", "high"):
+            self.compress.side_effect = RuntimeError("interrupted")
+            with self.assertRaises(RuntimeError):
+                pc.process(source, root=self.vault)
+        original_runner = pc._process_configured_job
+        seen = []
+
+        def observe(root, state):
+            seen.append((pc._cfg.CLAUDE_SUMMARY_MODEL, pc._cfg.CLAUDE_SUMMARY_EFFORT))
+            return original_runner(root, state)
+
+        self.compress.side_effect = lambda src, dst, *_: shutil.copy2(src, dst)
+        with patch.object(pc._cfg, "CLAUDE_SUMMARY_MODEL", "new-model"), \
+                patch.object(pc._cfg, "CLAUDE_SUMMARY_EFFORT", "low"), \
+                patch.object(pc, "_process_configured_job", side_effect=observe):
+            pc.process(source, root=self.vault)
+            self.assertEqual(pc._cfg.CLAUDE_SUMMARY_MODEL, "new-model")
+            self.assertEqual(pc._cfg.CLAUDE_SUMMARY_EFFORT, "low")
+        self.assertEqual(seen, [("original-model", "high")])
+        self.assertEqual(self.transcribe.call_count, 1)
 
     def test_explicit_negation_prevents_automatic_assignment(self):
         profile = task_scoring.TaskProfile("Alpha", self.root / "Alpha", keywords=("alpha pipeline",))

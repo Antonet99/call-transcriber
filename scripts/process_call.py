@@ -28,7 +28,7 @@ from scripts.obsidian import frontmatter as fm
 from scripts.obsidian import indexes as obs_indexes
 from scripts import task_scoring
 import scripts.settings as _cfg
-from scripts.terminal import console as _con, panel, phase, status
+from scripts.terminal import console as _con, panel, phase, status, completion_details
 
 _classification_logger = logging.getLogger(__name__)
 
@@ -36,8 +36,8 @@ def _step(msg: str) -> None:
     _con.print(f"  [cyan]·[/cyan] {msg}")
 
 def _ok(msg: str, elapsed: float = 0.0) -> None:
-    t = f" [dim]{elapsed:.0f}s[/dim]" if elapsed >= 1 else ""
-    _con.print(f"  [green]✓[/green] {msg}{t}")
+    t = f" {elapsed:.0f}s" if elapsed >= 1 else ""
+    _con.print(Text.assemble(("  [OK] ", "bold #86efac"), (msg, "#e2e8f0"), (t, "#93c5fd")))
 
 def _warn(msg: str) -> None:
     _con.print(f"  [yellow]![/yellow] {msg}")
@@ -767,7 +767,7 @@ def _recording_job(
 
     if candidates:
         state = max(candidates, key=lambda item: float(item.get("timestamp", 0)))
-        if state.get("config") != config and not state.get("complete"):
+        if not jobs.compatible_config(state.get("config", {}), config) and not state.get("complete"):
             raise ValueError("Configurazione diversa dal checkpoint: ripristinare i parametri originali per riprendere.")
     elif source_exists:
         state = jobs.load_job(root, source, config, expected_signature=expected_signature)
@@ -853,6 +853,8 @@ def process(
     task_model: str = "",
     expected_signature: list[int] | None = None,
     recording_context: dict | None = None,
+    allow_unverified_config: bool = False,
+    use_current_config: bool = False,
 ) -> dict:
     configured_root = root or _cfg.VAULT_ROOT
     if recording_context is None:
@@ -882,6 +884,8 @@ def process(
         "task_model": task_model or _cfg.CLAUDE_TASK_MODEL,
         "provider": _cfg.LLM_PROVIDER, "transcription_model": _cfg.GROQ_WHISPER_MODEL,
     }
+    from scripts.user_settings import snapshot
+    config["runtime_settings"] = snapshot()
     with jobs.vault_lock(root):
         if context is None:
             state = jobs.load_job(root, resolved, config, expected_signature=expected_signature)
@@ -893,15 +897,44 @@ def process(
             )
             if complete:
                 return state["result"]
+        if state.get("last_error") == "ConfigurationNotReady" and not state.get("audio_ready") and not state.get("committed"):
+            from scripts.config_verification import pending_config
+            state["config"] = pending_config(state["config"], config, use_current=use_current_config)
+            jobs.save_job(root, state)
+        elif use_current_config and state["config"] != config:
+            raise ValueError("La lavorazione ha gia' iniziato l'elaborazione: mantenere la configurazione originale del checkpoint.")
+        for key, explicit in (("summary_model", summary_model), ("task_model", task_model)):
+            if explicit and state["config"].get(key) != explicit and not state.get("complete"):
+                raise ValueError("Configurazione diversa dal checkpoint: modello esplicito incompatibile.")
         try:
-            return _process_job(root, state)
+            return _process_job(root, state, allow_unverified_config=allow_unverified_config)
         except Exception as exc:
             state["last_error"] = type(exc).__name__
             jobs.save_job(root, state)
             raise
 
 
-def _process_job(root: Path, state: dict) -> dict:
+def _process_job(root: Path, state: dict, *, allow_unverified_config: bool = False) -> dict:
+    from scripts.user_settings import snapshot, use
+    config = state["config"]
+    if "runtime_settings" not in config:
+        # Legacy checkpoints did not record effort and auxiliary models.
+        config["runtime_settings"] = snapshot()
+        jobs.save_job(root, state)
+    with use(config["runtime_settings"]):
+        if not state.get("complete") and (not state.get("committed") or not state.get("kanban_done")):
+            from scripts.config_verification import require_ready
+            if config["provider"] != _cfg.LLM_PROVIDER:
+                raise ValueError("Provider diverso dal checkpoint: ripristinare il provider originale prima della ripresa.")
+            effective = snapshot()
+            effective.update(CLAUDE_SUMMARY_MODEL=config["summary_model"],
+                             CLAUDE_TASK_MODEL=config["task_model"],
+                             GROQ_WHISPER_MODEL=config["transcription_model"])
+            require_ready(effective, allow_unverified=allow_unverified_config)
+        return _process_configured_job(root, state)
+
+
+def _process_configured_job(root: Path, state: dict) -> dict:
     source = Path(state["source"])
     work_dir = root / ".pipeline" / "work" / state["id"]
     context = state.get("recording_context") or {}
@@ -1110,7 +1143,7 @@ def _process_job(root: Path, state: dict) -> dict:
             obs_indexes.rebuild(root)
     except Exception:
         logging.exception("Manutenzione differita; call %s completata", state["id"])
-    panel("Call completata", f"{call_dir.name}\n\nProgetto: {state['task_name'] or 'Senza progetto'}\nSalvata in: {call_dir}", "green")
+    panel("Call completata", completion_details(call_dir.name, state['task_name'] or "Senza progetto", str(call_dir)), "green")
     return result
 
 
@@ -1122,6 +1155,10 @@ def main() -> None:
     parser.add_argument("--archive-max-mb", type=float, default=None)
     parser.add_argument("--summary-model", default="")
     parser.add_argument("--task-model", default="")
+    parser.add_argument("--allow-unverified-config", action="store_true",
+                        help="Accetta esplicitamente il rischio delle impostazioni non verificate per questa esecuzione.")
+    parser.add_argument("--use-current-config", action="store_true",
+                        help="Applica preferenze corrette solo a un checkpoint bloccato dalla verifica prima di elaborare l'audio.")
     args = parser.parse_args()
 
     result = process(
@@ -1131,6 +1168,8 @@ def main() -> None:
         archive_max_mb=args.archive_max_mb,
         summary_model=args.summary_model,
         task_model=args.task_model,
+        allow_unverified_config=args.allow_unverified_config,
+        use_current_config=args.use_current_config,
     )
     for k, v in result.items():
         print(f"{k}: {v}")

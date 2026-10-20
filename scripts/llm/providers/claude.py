@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -71,6 +72,7 @@ class ClaudeProvider(LlmProvider):
         self._runner = runner
         self.last_usage: dict[str, Any] = {}
         self.last_response: dict[str, Any] = {}
+        self.last_warnings: set[str] = set()
 
     def _resolve_executable(self) -> str | None:
         configured = self._configured_executable or _setting("CLAUDE_EXECUTABLE", None)
@@ -97,7 +99,7 @@ class ClaudeProvider(LlmProvider):
             return str(configured)
         return "Task" if agents_json else ""
 
-    def _call(self, prompt: str, model: str, effort: str, agents_json: str = "") -> str:
+    def _call(self, prompt: str, model: str, effort: str, agents_json: str = "", *, max_turns: int | None = None) -> str:
         executable = self._resolve_executable()
         if not executable:
             raise RuntimeError("Claude CLI non disponibile: configurare CLAUDE_EXECUTABLE o installare claude.")
@@ -114,7 +116,7 @@ class ClaudeProvider(LlmProvider):
             "--output-format",
             "json",
             "--max-turns",
-            str(_setting("CLAUDE_MAX_TURNS", 3)),
+            str(_setting("CLAUDE_MAX_TURNS", 3) if max_turns is None else max_turns),
             "--no-session-persistence",
             "--tools",
             self._tools(agents_json),
@@ -141,6 +143,11 @@ class ClaudeProvider(LlmProvider):
 
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
+        self.last_warnings = set()
+        if "fallback" in stderr.lower():
+            self.last_warnings.add("fallback")
+        if re.search(r"effort[^\n]*(?:ignor|unsupported|not supported|unknown)|(?:ignor|unsupported|unknown)[^\n]*effort", stderr, re.I):
+            self.last_warnings.add("effort_ignored")
         if result.returncode != 0:
             detail = stderr or stdout or "nessun dettaglio"
             raise RuntimeError(f"Claude CLI exit {result.returncode}: {detail}")

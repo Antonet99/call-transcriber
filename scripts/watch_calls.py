@@ -22,7 +22,7 @@ from rich.text import Text
 
 import scripts.settings as _cfg
 from scripts.filesystem import atomic_write_text
-from scripts.terminal import console, panel, interactive, read_key, clear_input, input_line, screen_session, Choice, Selection, select_item
+from scripts.terminal import console, panel, interactive, read_key, clear_input, input_line, screen_session, Choice, Selection, select_item, confirm_completion
 
 _LOGGER = logging.getLogger(__name__)
 _SUPPORTED_EXT = {
@@ -583,10 +583,12 @@ def _show_unprocessed(handler: _CallHandler) -> None:
             continue
         try:
             process_recording(handler._root, item, **handler._extra)
-            message = Text("Elaborazione completata. La registrazione è stata rimossa dall'elenco.", style="bold #86efac")
         except Exception as exc:
             _LOGGER.exception("Elaborazione su richiesta interrotta")
             message = Text(f"Elaborazione non completata: {exc}. Stato conservato; seleziona nuovamente la registrazione per riprendere.", style="bold #fb7185")
+        else:
+            confirm_completion()
+            return
         finally:
             clear_input()
 
@@ -595,7 +597,7 @@ def _menu_loop(handler: _CallHandler, observer: Observer, maintenance_interval: 
     selected = None
     visible_selection = None
     rendered = None
-    selection = Selection([])
+    selection = Selection([], separate_groups=True)
     last_scan = last_maintenance = time.monotonic()
     while observer.is_alive():
         now = time.monotonic()
@@ -615,31 +617,39 @@ def _menu_loop(handler: _CallHandler, observer: Observer, maintenance_interval: 
         focus = None
         if selected != visible_selection:
             previous = selection.choices[selection.index].value if selection.index >= 0 else None
-            focus = previous if previous in {"queue", "catalog"} else ("queue" if visible_selection is not None else None)
+            focus = previous if previous in {"queue", "catalog", "settings"} else ("queue" if visible_selection is not None else None)
             clear_input()
-            selection = Selection([])
+            selection = Selection([], separate_groups=True)
             visible_selection = selected
         choices = []
         if selected:
             if entry.get("action"):
-                choices.append(Choice(entry["action"], "Riprendi l'operazione già scelta", style="#fbbf24"))
+                choices.append(Choice(entry["action"], "Riprendi l'operazione già scelta", "Azioni sulla registrazione", style="#fbbf24"))
             else:
-                choices.extend([Choice("process", "Trascrivi e riassumi", style="#86efac"),
-                                Choice("save", "Salva solo registrazione", style="#93c5fd"),
-                                Choice("discard", "Scarta · cestino per 30 giorni", style="#fb7185")])
-        choices.extend([Choice("queue", "Nuove registrazioni in attesa · Q", style="#67e8f9"),
-                        Choice("catalog", "Registrazioni non elaborate · N", style="#c4b5fd")])
+                choices.extend([Choice("process", "Trascrivi e riassumi", "Azioni sulla registrazione", style="#86efac"),
+                                Choice("save", "Salva solo registrazione", "Azioni sulla registrazione", style="#93c5fd"),
+                                Choice("discard", "Scarta · cestino per 30 giorni", "Azioni sulla registrazione", style="#fb7185")])
+        choices.extend([Choice("queue", "Nuove registrazioni in attesa · Q", "Menu principale", style="#67e8f9"),
+                        Choice("catalog", "Registrazioni non elaborate · N", "Menu principale", style="#c4b5fd"),
+                        Choice("settings", "Impostazioni · I", "Menu principale", style="#93c5fd")])
         selection.update(choices)
         if focus is not None:
             selection.index = next(i for i, choice in enumerate(choices) if choice.value == focus)
         display = (str(selected), entry.get("status"), entry.get("action"), len(handler.snapshot()), len(ready), selection.index, console.size)
         if display != rendered:
-            message = f"{selected.name}\nIn attesa: {display[3]} · Pronte: {len(ready)}" if selected else f"Registrazioni in attesa: {display[3]}"
-            panel("Nuova call" if selected else "In ascolto", selection.render(message))
+            message = Text(f"Registrazioni in attesa: {display[3]} · Pronte: {len(ready)}", style="#93c5fd")
+            if selected:
+                message.append("\nNuova registrazione disponibile\n", style="bold #86efac")
+                message.append(selected.name, style="bold #f8fafc")
+            panel("Home", selection.render(message))
             rendered = display
         key = read_key()
-        action = {"q": "queue", "n": "catalog"}.get(key) or selection.handle(key)
-        if action == "queue":
+        action = {"q": "queue", "n": "catalog", "i": "settings"}.get(key) or selection.handle(key)
+        if action == "settings":
+            from scripts.user_settings import show_menu
+            show_menu()
+            rendered = None
+        elif action == "queue":
             selected = _show_queue(handler) or selected
             rendered = None
         elif action == "catalog":
@@ -654,7 +664,9 @@ def _menu_loop(handler: _CallHandler, observer: Observer, maintenance_interval: 
                     continue
                 title, directory = details
             try:
-                handler.execute(selected, action, title=title, task_dir=directory)
+                completed = handler.execute(selected, action, title=title, task_dir=directory)
+                if completed and action == "process":
+                    confirm_completion()
             except (OSError, ValueError) as exc:
                 _LOGGER.exception("Scelta non eseguita")
                 panel("Scelta non eseguita", str(exc), "yellow")
@@ -665,6 +677,8 @@ def _menu_loop(handler: _CallHandler, observer: Observer, maintenance_interval: 
 def watch(root: Path | None = None, **kwargs: Any) -> None:
     root = (root or _cfg.VAULT_ROOT).resolve()
     _setup_logging(root)
+    if _cfg.USER_SETTINGS_ERROR:
+        _LOGGER.warning(_cfg.USER_SETTINGS_ERROR)
     watch_dir = root / "da_processare"
     watch_dir.mkdir(parents=True, exist_ok=True)
     kwargs.pop("retry_limit", None)

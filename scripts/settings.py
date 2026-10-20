@@ -79,3 +79,16 @@ KANBAN_DEDUP_LENGTH: int = 60
 LLM_PROVIDER: str = _os.environ.get("LLM_PROVIDER", "claude")
 STABLE_TIMEOUT_SECONDS: float = 120.0
 LLM_RETRY_DELAY_SECONDS: float = 2.0
+
+CLAUDE_TIMEOUT_SECONDS: float = 900.0
+CLAUDE_MAX_BUDGET_USD: float = 1.0
+
+from scripts import user_settings as _user_settings
+
+USER_DEFAULTS = {key: globals()[key] for key in _user_settings.FIELDS}
+USER_SETTINGS_ERROR = ""
+if _os.environ.get("CALL_PIPELINE_NO_DOTENV") != "1":
+    try:
+        globals().update(_user_settings.load())
+    except ValueError as _error:
+        USER_SETTINGS_ERROR = str(_error)

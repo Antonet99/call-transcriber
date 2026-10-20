@@ -12,6 +12,133 @@ from scripts import terminal, watch_calls
 
 
 class TerminalTests(unittest.TestCase):
+    def test_menu_message_and_long_choices_wrap_without_losing_text(self):
+        message = ("Elaborazione sospesa prima di Whisper/Claude sulla registrazione. "
+                   "Procedere comunque accetta il rischio di errore e consumo; vale solo per questa esecuzione.")
+        label = "Procedi comunque per questa registrazione"
+        for width in (40, 60, 100):
+            with self.subTest(width=width):
+                output = StringIO()
+                console = Console(file=output, width=width, height=40)
+                screen = terminal._Screen()
+                with patch.object(terminal, "console", console), patch.object(terminal, "_screen", screen):
+                    selection = terminal.Selection([terminal.Choice("proceed", label)])
+                    terminal.panel("Configurazione", selection.render(message))
+                    console.print(screen.render())
+                rendered = output.getvalue()
+                normalized = " ".join(rendered.replace("│", " ").split())
+                self.assertIn(message, normalized)
+                self.assertIn(label, normalized)
+                self.assertNotIn("…", rendered)
+                self.assertTrue(all(len(line) <= width for line in rendered.splitlines()))
+
+    def test_resize_reflows_menu_and_preserves_selection(self):
+        console = Console(file=StringIO(), width=100, height=35)
+        selection = terminal.Selection([terminal.Choice("first", "Primo elemento"),
+                                        terminal.Choice("last", "Una voce abbastanza lunga da richiedere piu righe nel terminale stretto")])
+        selection.handle("down")
+        with patch.object(terminal, "console", console):
+            wide = selection.render()
+            console.width = 35
+            narrow = selection.render()
+            console.width = 100
+            restored = selection.render()
+        self.assertGreater(narrow.plain.count("\n"), wide.plain.count("\n"))
+        self.assertEqual(restored.plain, wide.plain)
+        self.assertEqual(selection.handle("enter"), "last")
+
+    def test_wrapped_rows_scroll_with_last_selected_choice_visible(self):
+        choices = [terminal.Choice(i, f"Registrazione {i} con un titolo lungo da visualizzare su piu righe") for i in range(20)]
+        selection = terminal.Selection(choices)
+        for _ in range(19):
+            selection.handle("down")
+        output = StringIO()
+        console = Console(file=output, width=40, height=24)
+        screen = terminal._Screen()
+        with patch.object(terminal, "console", console), patch.object(terminal, "_screen", screen):
+            terminal.panel("Registrazioni", selection.render("Seleziona la registrazione."))
+            console.print(screen.render())
+        rendered = output.getvalue()
+        self.assertIn("› Registrazione 19", rendered)
+        self.assertIn("↑ Altri elementi", rendered)
+        self.assertIn("Invio", rendered)
+        self.assertLessEqual(len(rendered.splitlines()), 24)
+
+    def test_long_notice_wraps_and_leaves_space_for_footer(self):
+        output = StringIO()
+        console = Console(file=output, width=40, height=24)
+        screen = terminal._Screen()
+        screen.notice = "Registrazione salvata nella cartella del progetto selezionato correttamente."
+        with patch.object(terminal, "console", console):
+            console.print(screen.render())
+        normalized = " ".join(output.getvalue().split())
+        self.assertIn(screen.notice, normalized)
+        self.assertIn("Ctrl+C", normalized)
+        self.assertLessEqual(len(output.getvalue().splitlines()), 24)
+
+    def test_completed_phase_uses_portable_badge_and_distinct_colors(self):
+        screen = terminal._Screen()
+        with patch.object(terminal, "_screen", screen), patch.object(terminal, "status", return_value=nullcontext()), \
+                patch.object(terminal.time, "monotonic", side_effect=[100, 102]):
+            with terminal.phase("Trascrizione"):
+                pass
+        step = screen.steps[0]
+        self.assertEqual(step.plain, "  [OK] Trascrizione  |  2s")
+        console = Console(file=StringIO(), color_system="truecolor")
+        colors = {segment.text: segment.style.color.get_truecolor().hex for segment in console.render(step)
+                  if segment.style and segment.style.color}
+        self.assertNotEqual(colors["  [OK] "], colors["Trascrizione"])
+        self.assertNotEqual(colors["Trascrizione"], colors["2s"])
+
+    def test_result_notice_expires_after_ten_seconds_without_sleeping(self):
+        screen = terminal._Screen()
+        output = StringIO()
+        with patch.object(terminal, "_screen", screen), patch.object(terminal.time, "monotonic", return_value=100) as clock:
+            terminal.panel("Call completata", "Call sintetica", "green")
+            terminal.panel("Home", "Menu principale")
+            clock.return_value = 109.9
+            Console(file=output, width=100).print(screen.render())
+            self.assertIn("Call completata · Call sintetica", output.getvalue())
+            clock.return_value = 110
+            output = StringIO()
+            Console(file=output, width=100).print(screen.render())
+            self.assertNotIn("Call completata", output.getvalue())
+            self.assertEqual(screen.notice, "")
+
+    def test_completion_keeps_steps_until_enter_and_starts_notice_timer_afterwards(self):
+        screen = terminal._Screen()
+        screen.steps = ["✓ Trascrizione", "✓ Riassunto"]
+        keys = iter([None, "escape", "q", "enter"])
+
+        def read_key():
+            self.assertTrue(screen.confirming)
+            self.assertIsNone(screen.notice_expires_at)
+            output = StringIO()
+            Console(file=output, width=120).print(screen.render())
+            self.assertIn("Premi Invio per tornare alla home", output.getvalue())
+            self.assertIn("✓ Trascrizione", output.getvalue())
+            return next(keys)
+
+        with patch.object(terminal, "_screen", screen), patch.object(terminal.time, "monotonic", return_value=100) as clock, \
+                patch.object(terminal, "clear_input") as clear, patch.object(terminal, "read_key", side_effect=read_key) as read:
+            terminal.panel("Call completata", "Call sintetica", "green")
+            clock.return_value = 200
+            terminal.confirm_completion()
+        clear.assert_called_once()
+        self.assertEqual(read.call_count, 4)
+        self.assertFalse(screen.confirming)
+        self.assertEqual(screen.notice_expires_at, 210)
+        self.assertEqual(screen.steps, ["✓ Trascrizione", "✓ Riassunto"])
+        self.assertIn("Call completata", screen.notice)
+
+    def test_completion_interrupt_restores_confirmation_state(self):
+        screen = terminal._Screen()
+        with patch.object(terminal, "_screen", screen), patch.object(terminal, "clear_input"), \
+                patch.object(terminal, "read_key", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                terminal.confirm_completion()
+        self.assertFalse(screen.confirming)
+
     def test_styled_choices_preserve_literal_labels_and_readable_selection(self):
         label = Text("[Review] · Progetto Alpha", style="bold #f8fafc")
         selection = terminal.Selection([terminal.Choice("call", label, "Salvate", style="#86efac")])

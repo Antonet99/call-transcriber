@@ -19,6 +19,7 @@ class OnDemandPipelineTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch("scripts.config_verification.require_ready"))
         self.temp = self.stack.enter_context(tempfile.TemporaryDirectory())
         self.root = Path(self.temp) / "vault"
         self.task = self.root / "completate" / "Task" / "Alpha"

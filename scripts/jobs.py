@@ -102,6 +102,14 @@ def pending_call_dirs(root: Path) -> set[Path]:
             if not s.get("complete") and s.get("final_dir")}
 
 
+def compatible_config(saved: dict, current: dict) -> bool:
+    ignored = {"runtime_settings", "summary_model", "task_model", "transcription_model"}
+    if "runtime_settings" not in current:
+        return saved == current
+    return ({key: value for key, value in saved.items() if key not in ignored}
+            == {key: value for key, value in current.items() if key not in ignored})
+
+
 def load_job(root: Path, source: Path, config: dict, expected_signature: list[int] | None = None) -> dict:
     source_key = os.path.normcase(str(source.resolve()))
     if not source.is_file():
@@ -123,7 +131,7 @@ def load_job(root: Path, source: Path, config: dict, expected_signature: list[in
     path = root / ".pipeline" / "jobs" / f"{job_id}.json"
     if path.exists():
         state = json.loads(path.read_text(encoding="utf-8"))
-        if state.get("config") != config and not state.get("complete"):
+        if not compatible_config(state.get("config", {}), config) and not state.get("complete"):
             raise ValueError("Configurazione diversa dal checkpoint: ripristinare i parametri originali per riprendere.")
         return state
     state = {"id": job_id, "source": str(source.resolve()), "sha256": digest,

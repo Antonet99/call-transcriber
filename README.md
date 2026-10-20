@@ -131,9 +131,11 @@ Unregister-ScheduledTask -TaskName 'CallWatcher' -Confirm:$false  # rimuovi
 
 ### Menu e coda delle registrazioni
 
-Il terminale usa una schermata che si aggiorna sul posto mantenendo lo stile ciano. Le righe selezionabili sono evidenziate; gli elenchi lunghi scorrono con la selezione. L'esito dell'ultima operazione resta visibile in forma compatta.
+Il terminale usa una schermata che si aggiorna sul posto mantenendo lo stile ciano. Le righe selezionabili sono evidenziate; gli elenchi lunghi scorrono con la selezione. Nella home le azioni sulla nuova registrazione sono separate da un divisore dal menu principale, che contiene coda e registrazioni non elaborate. L'esito dell'ultima operazione compare in basso per circa 10 secondi, poi viene rimosso senza bloccare il terminale.
 
 I colori distinguono azioni e stati: verde per completamenti e registrazioni salvate, ambra per attese, riprese e cestino, rosso per errori e scarto, viola per progetti e progressi. Le date sono azzurre e i tasti rapidi hanno etichette colorate ad alto contrasto. La selezione resta evidenziata in ciano.
+
+Le fasi completate usano l'indicatore testuale `[OK]`, compatibile anche con font privi del simbolo di spunta: indicatore verde, descrizione chiara e durata azzurra. Nel riepilogo finale il progetto e' viola e il percorso azzurro.
 
 Ctrl+C arresta il watcher e conserva lo stato, senza chiedere `Terminare il processo batch (S/N)?`. Il launcher mantiene la stessa console e il codice di uscita di Python. La chiusura batch usa `CALL` sulla stessa riga dell'avvio, accorgimento adottato anche dal [wrapper Gradle](https://github.com/gradle/gradle/blob/master/gradlew.bat); gli argomenti con spazi o punti esclamativi restano invariati.
 
@@ -150,7 +152,7 @@ Per una nuova call selezionare `Trascrivi e riassumi`, `Salva solo registrazione
 
 La coda procede per ordine di disponibilità; i file preesistenti sono rilevati in ordine cronologico. Gli eventi duplicati dello stesso file non producono altre voci. Un file in scrittura non blocca gli altri: il watcher verifica dimensione, timestamp e, su Windows, disponibilità del file rispetto agli accessi in scrittura. La vista della coda aggiorna le voci quando diventano disponibili.
 
-Mentre una pipeline è in corso restano visibili i progressi attuali. Le nuove registrazioni continuano a essere rilevate; il menu ritorna alla conclusione. I tasti premuti durante l'elaborazione vengono scartati. Il comando diretto `process_call.py` resta invece un avvio esplicito della pipeline completa.
+Mentre una pipeline è in corso restano visibili i progressi attuali. A elaborazione riuscita, il riepilogo con destinazione e fasi completate resta visibile fino a una nuova pressione di Invio per tornare alla home; Esc e le scorciatoie non chiudono questa schermata. Vale sia per le elaborazioni dalla coda sia per quelle dal catalogo. I tasti premuti durante l'elaborazione vengono scartati. La notifica compatta in basso dura 10 secondi a partire dalla conferma, indipendentemente dal tempo dedicato alla lettura del riepilogo. Le nuove registrazioni continuano a essere rilevate anche durante l'attesa della conferma. Il comando diretto `process_call.py` resta invece un avvio esplicito della pipeline completa, senza questa attesa interattiva.
 
 Stato, ordine e scelte sono conservati in `.pipeline/watcher-state.json`, con copia `.json.bak`. Al riavvio i file presenti vengono ricontrollati; per le operazioni interrotte selezionare `Riprendi l'operazione già scelta` e confermare con Invio. Nessuna ripartenza automatica delle chiamate ai provider. Una decisione viene salvata prima di iniziare l'operazione. Gli errori tornano nel menu con stato recuperabile e dettagli nel log. Se il journal principale è illeggibile viene usata la copia di sicurezza; se entrambe le copie sono illeggibili il watcher si ferma senza sovrascriverle o muovere registrazioni.
 
@@ -198,6 +200,128 @@ Per i video non serve piu' un'opzione dedicata: il video viene sempre spostato n
 ```
 
 ## Configurazione
+
+### Impostazioni dal terminale
+
+Messaggi e voci dei menu vanno a capo in base alla larghezza della finestra.
+Ridimensionando il terminale, il menu ricalcola le righe visibili mantenendo la
+selezione corrente. Negli elenchi lunghi le frecce continuano a scorrere le voci;
+gli indicatori `Altri elementi` segnalano le voci fuori dalla parte visibile.
+
+Dalla Home selezionare `Impostazioni` oppure premere `I`. Con frecce e Invio
+scegliere modello e ragionamento per riassunto, classificazione, operazioni leggere
+e revisori interni, oppure il modello Groq per la trascrizione. I modelli sono
+identificativi modificabili; la disponibilita' e i livelli di ragionamento supportati
+dipendono dal provider e dall'account, senza verifica remota automatica.
+
+Le opzioni avanzate comprendono tentativi aggiuntivi (0-10), timeout Claude in
+secondi e limite di spesa per singola invocazione Claude. `Salva modifiche` rende
+effettive le preferenze per le elaborazioni successive senza riavviare il watcher.
+Esc permette di scartare le modifiche; il ripristino dei valori predefiniti richiede
+conferma e poi salvataggio.
+
+Le preferenze sono salvate in `%LOCALAPPDATA%\CallTranscriber\settings.json`,
+fuori dal repository e dal vault. Non contengono credenziali. Un file non valido
+viene segnalato e non viene sovrascritto automaticamente; restano attivi i valori
+predefiniti. Le opzioni esplicite del comando manuale prevalgono sulle preferenze
+per una nuova lavorazione.
+
+I nuovi checkpoint conservano anche ragionamento, modelli ausiliari e limiti:
+una ripresa mantiene la configurazione originale. Per i checkpoint precedenti,
+i modelli gia' registrati restano invariati; i parametri non registrati vengono
+fissati alle preferenze correnti alla prima ripresa.
+
+### Verificare i modelli prima di elaborare una call
+
+1. Aprire `Impostazioni` dalla Home (`I`) e modificare i valori desiderati.
+2. Selezionare `Verifica configurazione · bozza attuale`: viene controllata la bozza
+   visibile, anche se non e' stata ancora salvata. Aprire il menu o salvare le
+   preferenze non avvia richieste ai provider.
+3. Leggere limiti e consumi, poi avviare esplicitamente una delle due prove:
+   Claude con solo catalogo Groq, oppure Claude con catalogo e prova audio Groq.
+   `Esc` annulla senza chiamate remote. La verifica non elabora registrazioni.
+4. Negli esiti selezionare una fase con frecce e Invio per leggere il dettaglio;
+   `Esc` torna all'elenco e poi alle impostazioni. Correggere eventuali errori
+   e ripetere la prova. Nessun identificativo viene sostituito automaticamente.
+5. Tornare alle impostazioni e scegliere `Salva modifiche` per applicare la bozza.
+
+I controlli locali verificano tipi, sintassi, intervalli e alcune incompatibilita'
+documentate. Non costituiscono un catalogo completo dei modelli disponibili per
+ogni account. I nomi inseriti dall'utente devono essere confermati dal provider.
+
+Le prove remote usano lo stesso adapter Claude CLI, eseguibile, directory,
+ambiente, parametri modello/effort e definizioni dei revisori della pipeline.
+Le combinazioni uguali vengono provate una sola volta; segue una prova del
+riassunto con entrambi i revisori. Il massimo e' cinque invocazioni CLI, ciascuna
+con tre turni, timeout di 60 secondi e budget richiesto di 0,05 USD, oppure limiti
+configurati inferiori. I consumi dei revisori rientrano nel budget della loro
+invocazione: il limite CLI e' una stima e puo' essere superato. Non ci sono retry;
+il primo errore interrompe le ulteriori prove Claude. Si applicano anche hook,
+MCP e configurazioni locali caricati dalla CLI, come nella pipeline.
+
+Gli stati sono `verificato`, `fallito`, `non verificato` e `parziale`.
+Un modello diverso nei consumi JSON o un avviso CLI di fallback/effort ignorato
+fallisce la prova. L'assenza di dati sul modello effettivo produce un esito
+parziale. L'output JSON corrente non attesta in modo sufficiente l'effort applicato
+e l'esecuzione dei singoli revisori: anche con risposta positiva, quelle prove
+restano **parziali**. La risposta testuale del modello non e' una prova di identita'.
+
+Groq riceve una richiesta catalogo e, soltanto scegliendo l'opzione audio, un WAV
+di un secondo di silenzio sintetico generato in memoria. Il client usa timeout
+massimo di 30 secondi e zero retry. Non vengono lette registrazioni del vault.
+Il catalogo dimostra accesso e presenza del modello, non la compatibilita' audio;
+la prova WAV verifica l'accettazione dell'endpoint, non la qualita' sul parlato.
+Restano applicabili fatturazione minima, limiti e disponibilita' dell'account Groq.
+
+Gli esiti vengono salvati accanto alle preferenze in
+`%LOCALAPPDATA%\CallTranscriber\verification.json`. Il report contiene solo
+esiti sintetici, data e impronta: niente token, credenziali, prompt o risposte.
+L'impronta comprende impostazioni, provider, contesto CLI e indicatori locali
+di account/configurazione; i file di autenticazione sono controllati solo tramite
+metadati. Una modifica pertinente o il trascorrere di 24 ore invalida il report.
+Non e' sempre possibile identificare l'account effettivo della CLI: la verifica
+non garantisce che account, autorizzazioni e servizio restino disponibili.
+
+Prima di iniziare le chiamate sulla registrazione, la pipeline controlla la
+configurazione effettiva, compresi i parametri espliciti e quelli del checkpoint.
+Se manca una verifica completa mostra gli esiti e consente di verificare oppure
+scegliere esplicitamente `Procedi comunque per questa registrazione`, accettando
+il rischio di errori e consumo. `Esc` interrompe conservando il checkpoint.
+La verifica da sola non fa partire l'elaborazione. Con l'attuale attestazione
+parziale Claude, la scelta di procedere resta quindi necessaria anche dopo prove
+remote senza errori.
+
+Per correggere una call bloccata dal controllo prima di elaborare l'audio,
+salvare i valori corretti da Impostazioni e scegliere alla ripresa
+`Applica le preferenze correnti a questo checkpoint`. Questa scelta e' disponibile
+solo per un checkpoint fermo alla verifica; le lavorazioni gia' iniziate mantengono
+la configurazione originale. Una ripresa che deve soltanto completare operazioni
+locali gia' senza ulteriori chiamate provider non richiede nuove prove.
+
+In esecuzione manuale non interattiva il controllo blocca senza effettuare prove.
+L'opzione `--allow-unverified-config` accetta il rischio per quella sola esecuzione
+(restano bloccati gli errori locali). `--use-current-config` applica esplicitamente
+le preferenze corrette soltanto a un checkpoint bloccato dalla verifica prima
+di elaborare l'audio; non sostituisce la verifica o la scelta di procedere.
+
+Documentazione ufficiale consultata: [Claude CLI](https://code.claude.com/docs/en/cli-reference),
+[modelli ed effort](https://code.claude.com/docs/en/model-config),
+[effort API](https://platform.claude.com/docs/en/build-with-claude/effort),
+[revisori/subagent](https://code.claude.com/docs/en/sub-agents),
+[Groq Speech to Text](https://console.groq.com/docs/speech-to-text).
+
+Verifica locale senza provider e senza vault operativo:
+
+```powershell
+$env:CALL_PIPELINE_NO_DOTENV = '1'
+$env:TEMP = Join-Path $PWD 'tests\.tmp'
+$env:TMP = $env:TEMP
+New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
+.\.venv\Scripts\python.exe -X utf8 -B tests/run_isolated.py
+```
+
+La suite blocca l'accesso a `.env`, al vault operativo e alle connessioni di rete;
+le nuove prove usano runner/client simulati e dati sintetici.
 
 Tutti i parametri sono in `scripts/settings.py`:
 

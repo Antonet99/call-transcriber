@@ -19,13 +19,25 @@ _TEXT = "#e2e8f0"
 _COLORS = {"cyan": "#67e8f9", "green": "#86efac", "yellow": "#fbbf24", "red": "#fb7185"}
 
 
-def _footer() -> Text:
+def _footer(confirming: bool = False) -> Text:
+    if confirming:
+        return Text.assemble(
+            (" Invio ", "bold #86efac on #14532d"), (" Torna alla home  ", _TEXT),
+            (" Ctrl+C ", "bold #fda4af on #881337"), (" Esci", _TEXT),
+        )
     return Text.assemble(
         (" ↑/↓ ", "bold #67e8f9 on #164e63"), (" Seleziona  ", _TEXT),
         (" Invio ", "bold #86efac on #14532d"), (" Conferma  ", _TEXT),
         (" Esc ", "bold #fcd34d on #713f12"), (" Indietro  ", _TEXT),
         (" Ctrl+C ", "bold #fda4af on #881337"), (" Esci", _TEXT),
     )
+
+
+def _panel_height(confirming: bool = False, notice: str = "") -> int:
+    width = max(1, console.width)
+    reserved = len(_footer(confirming).wrap(console, width))
+    reserved += len(Text(notice, no_wrap=False, overflow="fold").wrap(console, width))
+    return max(6, console.height - 4 - reserved)
 
 
 class _Screen:
@@ -37,22 +49,37 @@ class _Screen:
         self.spinner = None
         self.prompt = ""
         self.notice = ""
+        self.notice_expires_at = None
+        self.confirming = False
 
     def render(self):
+        if self.notice_expires_at is not None and time.monotonic() >= self.notice_expires_at:
+            self.notice = ""
+            self.notice_expires_at = None
         content = []
         if self.prompt:
             content.extend([Text(self.prompt, style="bold #c4b5fd"), Text("")])
         content.append(self.message if isinstance(self.message, Text) else Text(self.message, style=_TEXT))
-        content.extend(Text(step, style="bold #86efac") for step in self.steps)
+        if self.steps:
+            content.append(Text(""))
+        content.extend(step if isinstance(step, Text) else Text(step, style=_TEXT) for step in self.steps)
         if self.spinner is not None:
             content.append(self.spinner)
+        if self.confirming:
+            content.extend([Text(""), Text.assemble(
+                ("Riassunto completato.", "bold #86efac"), (" Premi ", _TEXT),
+                ("Invio", "bold #67e8f9"), (" per tornare alla home.", _TEXT),
+            )])
+        footer = _footer(self.confirming)
+        notice = Text("" if self.confirming else self.notice, style="bold #86efac", overflow="fold", no_wrap=False)
         return Group(
             Rule(Text("Call Transcriber", style="bold #67e8f9"), style="#38bdf8"),
             Text(""),
             Panel(Group(*content), title=Text(self.title, style=f"bold {_COLORS.get(self.color, self.color)}"),
-                  border_style=_COLORS.get(self.color, self.color), padding=(1, 2), height=max(6, console.height - 6)),
-            Text(self.notice, style="bold #86efac", overflow="ellipsis", no_wrap=True),
-            _footer(),
+                  border_style=_COLORS.get(self.color, self.color), padding=(1, 2),
+                  height=_panel_height(self.confirming, notice.plain)),
+            notice,
+            footer,
         )
 
 
@@ -203,14 +230,38 @@ def panel(title: str, message: str | Text, color: str = "cyan") -> None:
         _screen.title = title
         _screen.message = message
         _screen.color = color
-        _screen.steps = []
+        if color != "green":
+            _screen.steps = []
         _screen.prompt = ""
         if color == "green":
             _screen.notice = f"{title} · {str(message).replace(chr(10), ' ')}"
+            _screen.notice_expires_at = time.monotonic() + 10
         return
     accent = _COLORS.get(color, color)
     console.print(Panel(message if isinstance(message, Text) else Text(message, style=_TEXT),
                         title=Text(title, style=f"bold {accent}"), border_style=accent, padding=(1, 2)))
+
+
+def completion_details(title: str, project: str, destination: str) -> Text:
+    return Text.assemble(
+        (title, "bold #f8fafc"), ("\n\nProgetto: ", _TEXT),
+        (project, "bold #c4b5fd"), ("\nSalvata in: ", _TEXT),
+        (destination, "#93c5fd"),
+    )
+
+
+def confirm_completion() -> None:
+    if _screen is None:
+        return
+    clear_input()
+    _screen.confirming = True
+    _screen.notice_expires_at = None
+    try:
+        while read_key() != "enter":
+            pass
+    finally:
+        _screen.confirming = False
+        _screen.notice_expires_at = time.monotonic() + 10
 
 
 @contextmanager
@@ -231,11 +282,14 @@ def phase(label: str):
     started = time.monotonic()
     with status(label):
         yield
-    completed = f"  ✓ {label}  ·  {time.monotonic() - started:.0f}s"
+    completed = Text.assemble(
+        ("  [OK] ", "bold #86efac"), (label, _TEXT),
+        ("  |  ", "#64748b"), (f"{time.monotonic() - started:.0f}s", "#93c5fd"),
+    )
     if _screen is not None:
         _screen.steps.append(completed)
     else:
-        console.print(Text(completed, style="bold #86efac"))
+        console.print(completed)
 
 
 @dataclass(frozen=True)
@@ -248,9 +302,10 @@ class Choice:
 
 
 class Selection:
-    def __init__(self, choices: list[Choice], groups: tuple[str, ...] = ()):
+    def __init__(self, choices: list[Choice], groups: tuple[str, ...] = (), *, separate_groups: bool = False):
         self.choices = choices
         self.groups = groups
+        self.separate_groups = separate_groups
         self.index = next((i for i, choice in enumerate(choices) if choice.enabled), -1)
 
     def update(self, choices: list[Choice]) -> None:
@@ -271,14 +326,18 @@ class Selection:
     def render(self, message: str | Text = "") -> Text:
         rows = []
         selected_row = 0
+        width = max(1, console.width - 6)
         groups = self.groups or tuple(dict.fromkeys(choice.group for choice in self.choices)) or ("",)
         for group in groups:
+            if rows and self.separate_groups:
+                rows.append(Text("─" * width, style="#64748b"))
+                rows.append(Text())
             if group:
                 accent = next((choice.style for choice in self.choices if choice.group == group), "#67e8f9")
-                rows.append(Text(group, style=f"bold {accent}"))
+                rows.extend(Text(group, style=f"bold {accent}").wrap(console, width, overflow="fold", no_wrap=False))
             entries = [(i, choice) for i, choice in enumerate(self.choices) if choice.group == group]
             if not entries:
-                rows.append(Text("  Nessuna registrazione disponibile.", style="#94a3b8"))
+                rows.extend(Text("  Nessuna registrazione disponibile.", style="#94a3b8").wrap(console, width, overflow="fold", no_wrap=False))
             for i, choice in entries:
                 if i == self.index:
                     selected_row = len(rows)
@@ -288,13 +347,15 @@ class Selection:
                 if i == self.index:
                     label = label.plain if isinstance(label, Text) else label
                 row.append(label)
-                rows.append(row)
-            if group:
+                rows.extend(row.wrap(console, width, overflow="fold", no_wrap=False))
+            if group and not self.separate_groups:
                 rows.append(Text())
         message = message if isinstance(message, Text) else Text(message, style=_TEXT)
-        height = max(3, console.height - 13 - message.plain.count("\n"))
+        message_height = len(message.wrap(console, width, overflow="fold", no_wrap=False)) if message else 0
+        panel_height = _panel_height(_screen.confirming, _screen.notice) if _screen else _panel_height()
+        height = max(1, panel_height - 7 - message_height - (2 if message else 0))
         start = max(0, min(selected_row - height // 2, len(rows) - height))
-        text = Text(no_wrap=True, overflow="ellipsis")
+        text = Text(no_wrap=False, overflow="fold")
         if message:
             text.append(message)
             text.append("\n\n")

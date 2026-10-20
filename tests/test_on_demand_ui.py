@@ -1,6 +1,9 @@
 from pathlib import Path
+from io import StringIO
 import unittest
 from unittest.mock import Mock, patch
+
+from rich.console import Console
 
 from scripts import watch_calls as watcher
 
@@ -40,10 +43,42 @@ class OnDemandUITests(unittest.TestCase):
     def test_processing_starts_only_after_confirming_the_action(self):
         with patch("scripts.recording_catalog.list_unprocessed", side_effect=[self.items, []]), \
                 patch("scripts.recording_catalog.process_recording", return_value={}) as process, \
-                patch.object(watcher, "select_item", side_effect=["trash-id", "process", None]), \
+                patch.object(watcher, "select_item", side_effect=["trash-id", "process"]) as selection, \
+                patch.object(watcher, "confirm_completion") as completion, \
                 patch.object(watcher, "clear_input"):
             watcher._show_unprocessed(self.handler)
         process.assert_called_once_with(self.handler._root, self.items[1])
+        completion.assert_called_once()
+        self.assertEqual(selection.call_count, 2)
+
+    def test_home_separates_recording_actions_from_navigation(self):
+        self.handler.snapshot.return_value = [(Path("call.mp4"), {"status": "ready", "action": ""})]
+        observer = Mock()
+        observer.is_alive.side_effect = [True, False]
+        console = Console(file=StringIO(), width=100, height=32)
+        with patch.object(watcher, "panel") as panel, patch.object(watcher, "read_key", return_value=None), \
+                patch.object(watcher, "clear_input"), patch.object(watcher, "console", console), \
+                patch("scripts.terminal.console", console):
+            watcher._menu_loop(self.handler, observer, 3600)
+        title, content = panel.call_args.args
+        self.assertEqual(title, "Home")
+        self.assertIn("Nuova registrazione disponibile", content.plain)
+        self.assertLess(content.plain.index("Azioni sulla registrazione"), content.plain.index("Menu principale"))
+        self.assertIn("────", content.plain)
+        self.assertIn("Nuove registrazioni in attesa", content.plain)
+        self.assertIn("Registrazioni non elaborate", content.plain)
+
+    def test_queue_process_waits_for_completion_confirmation_only_on_success(self):
+        self.handler.snapshot.return_value = [(Path("call.mp4"), {"status": "ready", "action": ""})]
+        for success in (True, False):
+            with self.subTest(success=success):
+                observer = Mock()
+                observer.is_alive.side_effect = [True, False]
+                self.handler.execute.return_value = success
+                with patch.object(watcher, "panel"), patch.object(watcher, "read_key", return_value="enter"), \
+                        patch.object(watcher, "clear_input"), patch.object(watcher, "confirm_completion") as completion:
+                    watcher._menu_loop(self.handler, observer, 3600)
+                self.assertEqual(completion.call_count, int(success))
 
     def test_main_n_opens_catalog_without_starting_a_new_call(self):
         self.handler.snapshot.return_value = []
